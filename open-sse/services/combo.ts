@@ -1111,8 +1111,19 @@ async function handleComboChatInner({
     let lastError: string | null = null;
     let earliestRetryAfter: ComboRetryAfter | null = null;
     let lastStatus: number | null = null;
+    // #11804: the loop-safety timer is armed per setTry iteration but must be
+    // cleared on EVERY exit path, not just the happy one. Hoisted to function
+    // scope so the `finally` at the end of this function always reaches it —
+    // otherwise each error path (all_targets_skipped / all_accounts_inactive /
+    // aggregated status / final fallback / global timeout) returned to the client
+    // leaving a 10-minute timer pending, whose closure retains orderedTargets and
+    // the exhausted provider/connection sets. Field evidence on the issue: the
+    // client got a 502 immediately, and "Combo loop safety timeout ...
+    // force-terminating" was logged exactly 600s later.
+    let activeLoopSafetyTimer: ReturnType<typeof setTimeout> | null = null;
 
-    for (let setTry = 0; setTry <= maxSetRetries; setTry++) {
+    try {
+      for (let setTry = 0; setTry <= maxSetRetries; setTry++) {
       // #1731: Per-set-iteration set of providers whose quota is fully exhausted.
       // Reset each retry so providers excluded in a previous attempt get another chance.
       const exhaustedProviders = new Set<string>();
@@ -1198,6 +1209,7 @@ async function handleComboChatInner({
           );
         }, loopSafetyMs);
         loopSafetyTimer.unref?.();
+        activeLoopSafetyTimer = loopSafetyTimer;
       });
       const runningTasks = new Set<Promise<void>>();
       let anySuccess = false;
@@ -2870,11 +2882,20 @@ async function handleComboChatInner({
     // Surface the recovery hint with a generic retry recommendation so the client at least
     // gets a non-opaque message instead of "Combo routing completed without an upstream response".
     recordComboFailure(effectiveSessionId, combo.name);
-    return errorResponseWithComboDiagnostics(
-      503,
-      "Combo routing completed without an upstream response",
-      buildNoUpstreamResponseDiagnostics(orderedTargets.length)
-    );
+      return errorResponseWithComboDiagnostics(
+        503,
+        "Combo routing completed without an upstream response",
+        buildNoUpstreamResponseDiagnostics(orderedTargets.length)
+      );
+    } finally {
+      // #11804: always release the loop-safety timer. Covering every exit path by
+      // construction here means a future `return` added to this function cannot
+      // silently reintroduce the leak.
+      if (activeLoopSafetyTimer) {
+        clearTimeout(activeLoopSafetyTimer);
+        activeLoopSafetyTimer = null;
+      }
+    }
   };
 
   // FASE 2.1: acquire the per-connection concurrency slot for the selected
