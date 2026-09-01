@@ -392,7 +392,12 @@ export default function RadarPage() {
           {pageState === "optin_pending" && (
             <Card>
               <div className="mx-auto flex max-w-5xl flex-col items-center gap-6 py-8 text-center">
-                <div className="text-4xl">📡</div>
+                <span
+                  aria-hidden="true"
+                  className="material-symbols-outlined text-4xl text-violet-400"
+                >
+                  radar
+                </span>
                 <h2 className="text-xl font-semibold">{t("activateTitle")}</h2>
                 <p className="max-w-2xl text-text-muted">{t("activateDescription")}</p>
 

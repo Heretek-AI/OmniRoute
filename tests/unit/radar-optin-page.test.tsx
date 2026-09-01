@@ -104,6 +104,11 @@ describe("Radar opt-in page", () => {
     expect(notFoundMock).not.toHaveBeenCalled();
     expect(container.textContent).toContain("activateTitle");
     expect(container.textContent).toContain("activateButton");
+    const activationIcon = container.querySelector(
+      'span.material-symbols-outlined[aria-hidden="true"]'
+    );
+    expect(activationIcon?.textContent).toBe("radar");
+    expect(container.textContent).not.toContain("📡");
   });
 
   it("shows the complete access and privacy explanation before every activation action", async () => {
