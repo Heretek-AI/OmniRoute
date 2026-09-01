@@ -18,7 +18,7 @@ const { setInterceptionRules, resolveInterceptFetch } = await import(
 describe("db/interceptionRules — resolveInterceptFetch precedence (#7339)", () => {
   function resetDb() {
     core.resetDbInstance();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     fs.mkdirSync(tmpDir, { recursive: true });
   }
 
@@ -28,7 +28,7 @@ describe("db/interceptionRules — resolveInterceptFetch precedence (#7339)", ()
 
   after(() => {
     core.resetDbInstance();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   it("returns undefined when no provider/model rule exists", () => {

@@ -39,7 +39,7 @@ const core = await import("../../src/lib/db/core.ts");
 
 test.after(() => {
   core.resetDbInstance();
-  rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 // ── Classification (unit) ───────────────────────────────────────────────────

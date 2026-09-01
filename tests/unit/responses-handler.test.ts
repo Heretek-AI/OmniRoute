@@ -130,7 +130,7 @@ function buildJsonResponse(status: number, payload: unknown) {
 
 async function resetStorage() {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
 }
 
@@ -185,7 +185,7 @@ test.afterEach(async () => {
 test.after(async () => {
   globalThis.fetch = originalFetch;
   await resetStorage();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("handleResponsesCore converts Responses API input, instructions, tools, metadata, and forces streaming", async () => {

@@ -13,7 +13,7 @@ const { getComboBuilderOptions } = await import("../../src/lib/combos/builderOpt
 
 test.after(() => {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("#6975 embeddings-only custom model must appear in the combo builder output", async () => {

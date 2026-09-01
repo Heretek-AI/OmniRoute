@@ -32,7 +32,7 @@ test.beforeEach(() => {
 
 test.after(() => {
   coreDb.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("memory_save creates a new memory entry", async () => {

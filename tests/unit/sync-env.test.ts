@@ -76,7 +76,7 @@ test("syncEnv creates .env from .env.example and generates install-time secrets"
     assert.doesNotMatch(envContent, /^COMMENTED_KEY=/m);
   } finally {
     process.env.DATA_DIR = origDataDir;
-    fs.rmSync(rootDir, { recursive: true, force: true });
+    fs.rmSync(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -111,7 +111,7 @@ test("syncEnv appends only missing keys and preserves existing values", () => {
     assert.match(envContent, /Auto-added by sync-env/);
   } finally {
     process.env.DATA_DIR = origDataDir;
-    fs.rmSync(rootDir, { recursive: true, force: true });
+    fs.rmSync(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -142,7 +142,7 @@ test("syncEnv treats quoted and unquoted values as equivalent", () => {
     assert.deepEqual(result, { created: false, added: 0 });
   } finally {
     process.env.DATA_DIR = origDataDir;
-    fs.rmSync(rootDir, { recursive: true, force: true });
+    fs.rmSync(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -163,7 +163,7 @@ test("syncEnv is idempotent when .env is already complete", () => {
     assert.equal(after, before);
   } finally {
     process.env.DATA_DIR = origDataDir;
-    fs.rmSync(rootDir, { recursive: true, force: true });
+    fs.rmSync(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -182,6 +182,6 @@ test("syncEnv oauth scope only copies oauth defaults", () => {
     assert.doesNotMatch(envContent, /^JWT_SECRET=/m);
     assert.doesNotMatch(envContent, /^Provider User-Agent Overrides/m);
   } finally {
-    fs.rmSync(rootDir, { recursive: true, force: true });
+    fs.rmSync(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

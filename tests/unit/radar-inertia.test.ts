@@ -57,7 +57,7 @@ function resetState() {
   core.resetDbInstance();
   try {
     if (fs.existsSync(TEST_DATA_DIR)) {
-      fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+      fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   } catch {
     // ignore
@@ -236,7 +236,7 @@ test.after(() => {
   core.resetDbInstance();
   delete process.env.RADAR_ENABLED;
   try {
-    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   } catch {
     // ignore
   }

@@ -26,7 +26,7 @@ test(
 
     t.after(async () => {
       loaded?.cleanup();
-      await rm(pluginDir, { recursive: true, force: true });
+      await rm(pluginDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     });
 
     await writeFile(

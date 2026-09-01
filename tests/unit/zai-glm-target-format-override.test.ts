@@ -14,7 +14,7 @@ const { DefaultExecutor } = await import("../../open-sse/executors/default.ts");
 
 test.after(() => {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("#7364 Defect A (URL): DefaultExecutor.buildUrl('zai', ...) ignores a per-model targetFormat:'openai' override and still returns the Anthropic Messages URL", () => {

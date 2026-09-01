@@ -27,7 +27,7 @@ const { handleEmbedding } = await import("../../open-sse/handlers/embeddings.ts"
 
 test.after(() => {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 function readConnectionRow(connId: string) {

@@ -25,7 +25,7 @@ const { SEARCH_PROVIDERS } = await import("../../open-sse/config/searchRegistry.
 const { goldenSnapshot } = await import("../helpers/goldenSnapshot.ts");
 
 test.after(() => {
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 // The specialized keys are not exported; enumerate them through the public

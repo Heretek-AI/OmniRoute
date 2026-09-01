@@ -19,7 +19,7 @@ const { resolveModelOrError } = await import("../../src/sse/handlers/chatHelpers
 test.beforeEach(() => core.resetDbInstance());
 test.after(() => {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("#6458 empty auto-combo pool returns a 503 instead of an empty combo", async () => {

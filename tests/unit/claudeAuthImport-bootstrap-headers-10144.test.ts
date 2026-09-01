@@ -28,7 +28,7 @@ test.afterEach(() => {
 });
 
 test.after(() => {
-  fs.rmSync(testDataDir, { recursive: true, force: true });
+  fs.rmSync(testDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("real enrichWithBootstrap sends the required CLI headers", async () => {

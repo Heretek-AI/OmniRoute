@@ -16,7 +16,7 @@ const { getProviderCredentials } = await import("../../src/sse/services/auth.ts"
 
 test.after(() => {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("#9204: an Antigravity CLI login is eligible for an agy model request", async () => {

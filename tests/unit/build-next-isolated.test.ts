@@ -20,7 +20,7 @@ async function withTempDir(fn) {
   try {
     await fn(tempDir);
   } finally {
-    await fs.rm(tempDir, { recursive: true, force: true });
+    await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 

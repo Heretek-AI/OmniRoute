@@ -32,7 +32,7 @@ function fakeHub(routes: Record<string, { status: number; body: unknown }>): Pro
 
 test.beforeEach(() => {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
   delete process.env.CONDUCTOR_HUB_URL;
   delete process.env.CONDUCTOR_HUB_TOKEN;
@@ -40,7 +40,7 @@ test.beforeEach(() => {
 
 test.after(async () => {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   delete process.env.CONDUCTOR_HUB_URL;
   while (servers.length > 0) {
     const s = servers.pop();

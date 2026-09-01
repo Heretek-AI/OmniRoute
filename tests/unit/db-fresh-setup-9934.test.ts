@@ -142,7 +142,7 @@ test(
     } finally {
       if (originalDataDir === undefined) delete process.env.DATA_DIR;
       else process.env.DATA_DIR = originalDataDir;
-      fs.rmSync(dataDir, { recursive: true, force: true });
+      fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   }
 );

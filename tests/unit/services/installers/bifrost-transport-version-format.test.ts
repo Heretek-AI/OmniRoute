@@ -86,8 +86,8 @@ describe("resolveSpawnArgs BIFROST_TRANSPORT_VERSION (real filesystem)", () => {
       process.env.DATA_DIR = ORIGINAL_DATA_DIR;
     }
     process.env.PATH = ORIGINAL_PATH;
-    fs.rmSync(dataDir, { recursive: true, force: true });
-    fs.rmSync(fakeBinDir, { recursive: true, force: true });
+    fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    fs.rmSync(fakeBinDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   it("BIFROST_TRANSPORT_VERSION is v-prefixed, matching what bin.js requires", async () => {

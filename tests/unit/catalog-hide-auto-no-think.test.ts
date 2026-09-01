@@ -33,7 +33,7 @@ async function fetchCatalog(): Promise<Array<{ id: string; type?: string }>> {
 test.after(() => {
   core.resetDbInstance();
   try {
-    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   } catch {
     /* best-effort */
   }

@@ -32,7 +32,7 @@ describe("#6996 DuckDuckGo VQD 429 misclassification", () => {
   after(() => {
     globalThis.fetch = originalFetch;
     resetDbInstance();
-    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   it("propagates upstream 429 instead of masking it as a generic 503", async () => {

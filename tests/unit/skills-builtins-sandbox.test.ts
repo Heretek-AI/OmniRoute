@@ -17,7 +17,7 @@ function makeTempDir(prefix) {
 }
 
 function removePath(targetPath) {
-  fs.rmSync(targetPath, { recursive: true, force: true });
+  fs.rmSync(targetPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
 async function importFresh(modulePath) {

@@ -17,14 +17,14 @@ const { getRecentEgressIpForConnection } = await import("../../src/lib/db/proxyL
 function resetStorage() {
   proxyLogger.clearProxyLogs();
   core.closeDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
 }
 
 test.beforeEach(() => resetStorage());
 test.after(() => {
   core.closeDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("returns the LAST known egress IP of the connection in the window", () => {

@@ -35,7 +35,7 @@ const quotaCache = await import("../../src/domain/quotaCache.ts");
 
 test.after(() => {
   coreDb.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 const COLD_WINDOWS = ["Bonus Pack 1", "Bonus Pack 2", "Bonus Pack 3", "Bonus Pack 4", "Weekly", "Daily"];

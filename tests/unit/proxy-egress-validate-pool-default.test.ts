@@ -29,7 +29,7 @@ const { validateProxyPool, _setEgressProbeForTests, clearEgressCache } = egress 
 
 async function resetStorage() {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
 }
 
@@ -41,7 +41,7 @@ test.beforeEach(async () => {
 test.after(() => {
   _setEgressProbeForTests(null);
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("validateProxyPool() with no injected deps does not crash on the real listProxies() {items,total} shape", async () => {

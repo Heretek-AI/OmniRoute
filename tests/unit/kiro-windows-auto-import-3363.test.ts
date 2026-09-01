@@ -44,7 +44,7 @@ test.beforeEach(() => {
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-kiro-3363-"));
   // Reset DB instance so each test gets a clean settings DB (no requireLogin).
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
   // Override HOME so homedir() returns a temp dir where no kiro-cli DB exists.
   process.env.HOME = tmpHome;
@@ -69,12 +69,12 @@ test.afterEach(() => {
     delete process.env.APPDATA;
   }
   globalThis.fetch = ORIGINAL_FETCH;
-  if (tmpHome) fs.rmSync(tmpHome, { recursive: true, force: true });
+  if (tmpHome) fs.rmSync(tmpHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test.after(() => {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 // Helper to call the GET handler and parse the JSON body.

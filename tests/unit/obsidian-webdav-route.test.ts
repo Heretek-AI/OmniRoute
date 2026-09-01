@@ -37,7 +37,7 @@ const obsidianDb = await import("../../src/lib/db/obsidian.ts");
 
 async function resetStorage() {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
 }
 
@@ -53,7 +53,7 @@ test.beforeEach(async () => {
 
 test.after(() => {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 
   if (ORIGINAL_DATA_DIR === undefined) {
     delete process.env.DATA_DIR;
@@ -119,7 +119,7 @@ test("POST with a valid temp dir → returns { username, password }, GET shows e
     assert.equal(getBody.webdavPassword, null);
     assert.equal(getBody.webdavPasswordSet, true);
   } finally {
-    fs.rmSync(vaultDir, { recursive: true, force: true });
+    fs.rmSync(vaultDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -155,7 +155,7 @@ test("GET masks the WebDAV password for anonymous callers but reveals it to a ma
       "a management session must still receive the plaintext password"
     );
   } finally {
-    fs.rmSync(vaultDir, { recursive: true, force: true });
+    fs.rmSync(vaultDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -217,7 +217,7 @@ test("DELETE after enable → webdavEnabled:false, creds cleared in GET", async 
     assert.equal(getBody.webdavUsername, null);
     assert.equal(getBody.webdavPassword, null);
   } finally {
-    fs.rmSync(vaultDir, { recursive: true, force: true });
+    fs.rmSync(vaultDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -243,7 +243,7 @@ test("GET when disabled does not leak password even if stale data exists", async
     assert.equal(getBody.webdavEnabled, false);
     assert.equal(getBody.webdavPassword, null);
   } finally {
-    fs.rmSync(vaultDir, { recursive: true, force: true });
+    fs.rmSync(vaultDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -272,7 +272,7 @@ test("Unauthenticated POST → 401 when auth is required", async () => {
     const res = await route.POST(req);
     assert.equal(res.status, 401);
   } finally {
-    fs.rmSync(vaultDir, { recursive: true, force: true });
+    fs.rmSync(vaultDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 

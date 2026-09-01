@@ -40,7 +40,7 @@ const { openOmniRouteDb } = await import("../../bin/cli/sqlite.mjs");
 test("#8826: openOmniRouteDb() falls back to node:sqlite when better-sqlite3 native binding is missing (construction-time failure)", async (t) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-8826-"));
   t.after(() => {
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch {}
     Module._load = originalLoad;
   });
 

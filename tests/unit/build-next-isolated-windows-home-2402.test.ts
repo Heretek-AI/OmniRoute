@@ -88,6 +88,6 @@ test("ensureWindowsBuildProfileDirs creates the isolated AppData directories", a
     assert.equal(fsSync.existsSync(env.APPDATA), true);
     assert.equal(fsSync.existsSync(env.LOCALAPPDATA), true);
   } finally {
-    await fs.rm(tempDir, { recursive: true, force: true });
+    await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

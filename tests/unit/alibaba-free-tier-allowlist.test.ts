@@ -58,7 +58,7 @@ function withAllowlistPack(
     if (previousPath) process.env.ALIBABA_FREE_TIER_ALLOWLIST_PATH = previousPath;
     else delete process.env.ALIBABA_FREE_TIER_ALLOWLIST_PATH;
     resetAlibabaFreeTierAllowlistCache();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 

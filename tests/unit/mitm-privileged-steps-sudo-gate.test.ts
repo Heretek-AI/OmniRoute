@@ -20,7 +20,7 @@ const manager = await import("../../src/mitm/manager.ts");
 
 test.after(() => {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("canRunPrivilegedMitmSteps is false when isMitmSudoPasswordRequired is true", () => {

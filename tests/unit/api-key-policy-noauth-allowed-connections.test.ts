@@ -25,7 +25,7 @@ const RESTRICTED_CONNECTION_UUID = "00000000-0000-4000-8000-000000000001";
 
 test.after(() => {
   coreDb.resetDbInstance();
-  try { fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true }); } catch {}
+  try { fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch {}
 });
 
 test("#9057 LAYER1: restricted key gets NO synthetic credentials for noauth provider felo", async () => {

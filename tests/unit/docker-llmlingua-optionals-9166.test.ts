@@ -149,7 +149,7 @@ test("#9166 standalone assembly includes the complete LLMLingua runtime closure"
       "the complete LLMLingua package payload must be copied"
     );
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -208,7 +208,7 @@ test("#9166 standalone assembly never overwrites an already pinned transformers 
       "missing dependencies from the transformers closure must still be copied"
     );
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -251,7 +251,7 @@ test("#9166 co-location completes a partially traced package (package.json witho
       "a partially traced package must be completed, not skipped as already present"
     );
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -302,7 +302,7 @@ test("#9166 co-location is not skipped when every closure dir exists but one is 
       "the closure-wide early-exit must not fire while any member is partial"
     );
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 

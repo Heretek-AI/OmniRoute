@@ -46,7 +46,7 @@ test(
         "sanity: confirms the underlying sql.js singleton mechanism this bug exploits"
       );
     } finally {
-      fs.rmSync(dataDir, { recursive: true, force: true });
+      fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   }
 );
@@ -94,7 +94,7 @@ test(
       // already-deleted path in the background.
       await new Promise((resolve) => setTimeout(resolve, 200));
     } finally {
-      fs.rmSync(dataDir, { recursive: true, force: true });
+      fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   }
 );
@@ -117,7 +117,7 @@ test(
 
       assert.equal(probe!.open, false, "closeProbeIfSafe() must still close non-sql.js adapters");
     } finally {
-      fs.rmSync(dataDir, { recursive: true, force: true });
+      fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   }
 );

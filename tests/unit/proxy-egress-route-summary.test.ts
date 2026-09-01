@@ -24,7 +24,7 @@ const route = await import("../../src/app/api/settings/proxies/egress/route.ts")
 function resetStorage() {
   core.resetDbInstance();
   proxyLogger.clearProxyLogs();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
 }
 
@@ -41,7 +41,7 @@ test.beforeEach(() => {
 
 test.after(() => {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("GET /api/settings/proxies/egress adds an anonymous summary to the existing payload", async () => {

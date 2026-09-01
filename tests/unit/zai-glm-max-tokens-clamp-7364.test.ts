@@ -15,7 +15,7 @@ const {
 
 test.after(() => {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("#7364 Defect B: zai/glm-4.6v max_tokens above the 32768 ceiling is clamped before dispatch", () => {

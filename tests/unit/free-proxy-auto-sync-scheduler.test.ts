@@ -45,7 +45,7 @@ function reset() {
   restoreEnv();
   process.env.FREE_PROXY_AUTO_SYNC_ENABLED = "false";
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
 }
 
@@ -57,7 +57,7 @@ test.after(() => {
   scheduler.stopFreeProxyAutoSync();
   scheduler._setSyncCycleRunnerForTests(null);
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   restoreEnv();
 });
 

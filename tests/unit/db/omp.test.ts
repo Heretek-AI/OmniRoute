@@ -67,7 +67,7 @@ beforeEach(() => {
 
 afterEach(() => {
   process.env.HOME = origHome;
-  fs.rmSync(tmpHome, { recursive: true, force: true });
+  fs.rmSync(tmpHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 describe("db/omp.ts — getOmpCredentials", () => {

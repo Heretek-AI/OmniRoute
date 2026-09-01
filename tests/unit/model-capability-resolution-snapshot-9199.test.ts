@@ -38,7 +38,7 @@ test.after(() => {
   }
   for (const [key, value] of originalContextLengthEnv) process.env[key] = value;
   try {
-    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   } catch {
     // best-effort cleanup
   }
@@ -46,7 +46,7 @@ test.after(() => {
 
 function seedFixture() {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
   core.getDbInstance();
 
@@ -223,7 +223,7 @@ function assertOrdinarySnapshotParity(
 
 test("#9199 bulk capability rows treat prototype-shaped keys as data", () => {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
   core.getDbInstance();
 

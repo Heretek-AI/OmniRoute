@@ -11,13 +11,13 @@ process.env.DATA_DIR = tmpDir;
 afterEach(() => {
   const binDir = path.join(tmpDir, "bin");
   try {
-    if (fs.existsSync(binDir)) fs.rmSync(binDir, { recursive: true, force: true });
+    if (fs.existsSync(binDir)) fs.rmSync(binDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   } catch {}
 });
 
 after(() => {
   process.env.DATA_DIR = originalDataDir;
-  if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
+  if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 describe("binaryManager", () => {

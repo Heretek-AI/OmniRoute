@@ -11,7 +11,7 @@ const core = await import("../../src/lib/db/core.ts");
 
 test.after(() => {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("#8065 a renewed quota written by one module instance is invisible to another module instance's routing read", async () => {

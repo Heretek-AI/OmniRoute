@@ -55,8 +55,8 @@ describe("#7774 — known-path short-circuit hides a genuinely runnable Claude b
       if (value === undefined) delete (process.env as Record<string, string | undefined>)[key];
       else process.env[key] = value;
     }
-    fs.rmSync(fakeHome, { recursive: true, force: true });
-    fs.rmSync(realBinDir, { recursive: true, force: true });
+    fs.rmSync(fakeHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    fs.rmSync(realBinDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   it("should still find and report Claude as installed+runnable via PATH fallback", async () => {

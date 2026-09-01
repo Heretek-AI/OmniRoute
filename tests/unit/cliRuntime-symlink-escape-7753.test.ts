@@ -51,10 +51,10 @@ test("#7753: a genuinely unsafe symlink whose ORIGINAL location is also untruste
   assert.equal(result.installed, false);
   assert.equal(result.reason, "symlink_escape");
 
-  await fsp.rm(untrustedDir, { recursive: true, force: true });
+  await fsp.rm(untrustedDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test.after(async () => {
-  await fsp.rm(sandboxHome, { recursive: true, force: true });
-  await fsp.rm(outsideDir, { recursive: true, force: true });
+  await fsp.rm(sandboxHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  await fsp.rm(outsideDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });

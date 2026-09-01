@@ -188,7 +188,7 @@ describe("S1 — login rate-limit key uses anti-spoofed peer IP", () => {
   });
 
   after(() => {
-    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     if (JWT_SAVED !== undefined) {
       process.env.JWT_SECRET = JWT_SAVED;
     } else {

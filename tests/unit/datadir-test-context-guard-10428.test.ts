@@ -60,7 +60,7 @@ test("G2: an explicit DATA_DIR still wins inside a test context", () => {
   withEnv({ DATA_DIR: explicit, NODE_ENV: "test" }, () => {
     assert.equal(resolveWritableDataDir(), explicit);
   });
-  fs.rmSync(explicit, { recursive: true, force: true });
+  fs.rmSync(explicit, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("G3: the escape hatch restores the old behavior for deliberate runs", () => {

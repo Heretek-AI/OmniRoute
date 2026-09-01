@@ -90,7 +90,7 @@ test("generator resolves a $ref path parameter into --id and substitutes {id} in
       "generated command must declare --body for the requestBody"
     );
   } finally {
-    rmSync(workDir, { recursive: true, force: true });
+    rmSync(workDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -126,7 +126,7 @@ components:
   try {
     assert.throws(() => runGenerator(specPath, outDir));
   } finally {
-    rmSync(workDir, { recursive: true, force: true });
+    rmSync(workDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 

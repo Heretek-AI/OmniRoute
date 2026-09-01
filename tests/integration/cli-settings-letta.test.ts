@@ -40,7 +40,7 @@ function req(init?: RequestInit) {
 async function resetStorage() {
   delete process.env.INITIAL_PASSWORD;
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
 }
 
@@ -58,7 +58,7 @@ test.beforeEach(async () => {
 
 test.afterEach(() => {
   process.env.HOME = origHome;
-  fs.rmSync(tmpHome, { recursive: true, force: true });
+  fs.rmSync(tmpHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 // ── Test 1: GET without auth → 401 ──────────────────────────────────────────
@@ -189,7 +189,7 @@ test("letta-settings: error responses do not leak stack traces", async () => {
 
 test.after(async () => {
   await resetStorage();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   delete process.env.DATA_DIR;
   delete process.env.API_KEY_SECRET;
   delete process.env.JWT_SECRET;

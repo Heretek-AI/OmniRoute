@@ -35,7 +35,7 @@ function runExport(extraEnv = {}) {
     },
   });
   const parsed = JSON.parse(fs.readFileSync(outPath, "utf8"));
-  fs.rmSync(outDir, { recursive: true, force: true });
+  fs.rmSync(outDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   return parsed;
 }
 

@@ -51,5 +51,5 @@ test("assembleStandalone repairs a hollow externalized package dir in the nested
     "hollow nested externalized package dir must be repaired with the real source package (index.js present)"
   );
 
-  fs.rmSync(tmp, { recursive: true, force: true });
+  fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });

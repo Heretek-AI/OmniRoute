@@ -37,7 +37,7 @@ const VALID_BODY = {
 
 test.beforeEach(() => {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
   delete process.env.CONDUCTOR_HUB_URL;
   delete process.env.OMNIROUTE_API_KEY;
@@ -45,7 +45,7 @@ test.beforeEach(() => {
 
 test.after(async () => {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   delete process.env.CONDUCTOR_HUB_URL;
   delete process.env.OMNIROUTE_API_KEY;
   while (servers.length > 0) {

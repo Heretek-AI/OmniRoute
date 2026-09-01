@@ -78,7 +78,7 @@ test("collectFragments reads sections sorted and flags invalid files", () => {
   assert.equal(c.features.length, 1);
   assert.equal(c.invalid.length, 1);
   assert.match(c.invalid[0].file, /bad\.md/);
-  rmSync(root, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("insertBullets appends at the END of each living section", () => {
@@ -134,19 +134,19 @@ test("aggregate dry-run touches nothing; real run writes and deletes fragments",
   const again = aggregate({ root });
   assert.equal(again.total, 0);
   assert.equal(readFileSync(join(root, "CHANGELOG.md"), "utf8"), after);
-  rmSync(root, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("aggregate refuses invalid fragments loudly", () => {
   const root = makeRoot({ fragments: { "features/oops.md": "forgot the dash" } });
   assert.throws(() => aggregate({ root }), /invalid changelog fragments/);
-  rmSync(root, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("gate findInvalidFragments: clean tree passes, bad placement/content fail", () => {
   const clean = makeRoot({ fragments: { "maintenance/1-ok.md": "- ok (#1)" } });
   assert.deepEqual(findInvalidFragments(clean), []);
-  rmSync(clean, { recursive: true, force: true });
+  rmSync(clean, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 
   const dirty = makeRoot({
     fragments: {
@@ -161,7 +161,7 @@ test("gate findInvalidFragments: clean tree passes, bad placement/content fail",
   assert.ok(files.some((f) => f.includes("stray.md")));
   assert.ok(files.some((f) => f.includes("unknown-section")));
   assert.ok(files.some((f) => f.includes("3-bad.md")));
-  rmSync(dirty, { recursive: true, force: true });
+  rmSync(dirty, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("gate skips README.md and .gitkeep; absent changelog.d is fine", () => {
@@ -170,11 +170,11 @@ test("gate skips README.md and .gitkeep; absent changelog.d is fine", () => {
   mkdirSync(join(root, "changelog.d/fixes"), { recursive: true });
   writeFileSync(join(root, "changelog.d/fixes/.gitkeep"), "");
   assert.deepEqual(findInvalidFragments(root), []);
-  rmSync(root, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 
   const bare = mkdtempSync(join(tmpdir(), "chfrag-bare-"));
   assert.deepEqual(findInvalidFragments(bare), []);
-  rmSync(bare, { recursive: true, force: true });
+  rmSync(bare, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("SECTIONS maps every dir to a real living-section heading in the fixture", () => {

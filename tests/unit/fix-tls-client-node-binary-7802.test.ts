@@ -22,7 +22,7 @@ test("no-ops when node_modules/tls-client-node is absent (module not installed)"
     await fixTlsClientNodeBinary({ rootDir, log });
     assert.deepEqual(logs, []);
   } finally {
-    rmSync(rootDir, { recursive: true, force: true });
+    rmSync(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -43,7 +43,7 @@ test("copies an already-populated root bin/ into the standalone dist bundle (#78
     assert.ok(existsSync(distBin), "dist bin/ should have been created");
     assert.deepEqual(readdirSync(distBin), ["tls-client-linux-ubuntu-amd64-1.0.0.so"]);
   } finally {
-    rmSync(rootDir, { recursive: true, force: true });
+    rmSync(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -79,7 +79,7 @@ test("retries the download when root bin/ is empty, and stops once a file appear
       "expected a success log once the retry recovered"
     );
   } finally {
-    rmSync(rootDir, { recursive: true, force: true });
+    rmSync(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -110,6 +110,6 @@ test("warns without throwing when every retry leaves bin/ empty (still rate-limi
       "expected a clear warning pointing at the manual fix, not a silent no-op"
     );
   } finally {
-    rmSync(rootDir, { recursive: true, force: true });
+    rmSync(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

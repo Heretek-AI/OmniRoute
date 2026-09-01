@@ -16,7 +16,7 @@ const providersRoute = await import("../../src/app/api/providers/route.ts");
 
 test.after(() => {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("GET keeps one parent row and projects raw Codex state without exposing credentials", async () => {

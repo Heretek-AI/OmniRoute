@@ -74,7 +74,7 @@ describe("ServiceSupervisor spawn-failure handling", () => {
         /ENOENT|EACCES|EINVAL|EFTYPE|not recognized|spawn|%1|Win32/i
       );
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 

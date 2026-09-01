@@ -23,7 +23,7 @@ const { resetDbInstance } = await import("../../src/lib/db/core.ts");
 
 test.after(() => {
   resetDbInstance();
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 async function withEnv(
