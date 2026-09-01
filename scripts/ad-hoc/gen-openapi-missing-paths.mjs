@@ -10,6 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectApiRouteFiles, toApiUrlPath, apiRoot } from "../check/lib/apiRoutes.mjs";
+import { isLocalOnlyPath, ALWAYS_PROTECTED_API_PATHS } from "../../src/server/authz/routeGuard.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SPEC = path.join(ROOT, "docs", "openapi.yaml");
@@ -83,17 +84,23 @@ lines.push("");
 lines.push("  # --- Generated route coverage (docs audit 2026-08-31) -----------------------");
 lines.push("  # Minimal entries for every implemented route not documented above. Methods");
 lines.push("  # are parsed from each route.ts's exports; summaries are path-derived.");
-lines.push("  # Regenerate with: node scripts/ad-hoc/gen-openapi-missing-paths.mjs --apply");
+lines.push(
+  "  # Regenerate with: node --import tsx/esm scripts/ad-hoc/gen-openapi-missing-paths.mjs --apply"
+);
 for (const [url, methods] of missing) {
   const tag = groupTag(url);
   if (!existingTags.has(tag.toLowerCase()) && !newTags.has(tag))
     newTags.set(tag, `${tag} endpoints (generated route coverage)`);
   lines.push(`  ${url}:`);
+  const loopbackOnly = isLocalOnlyPath(url);
+  const alwaysProtected = ALWAYS_PROTECTED_API_PATHS.includes(url);
   for (const method of methods.sort()) {
     lines.push(`    ${method.toLowerCase()}:`);
     lines.push(`      tags:`);
     lines.push(`        - ${tag}`);
     lines.push(`      summary: "${summaryFor(url, method)}"`);
+    if (loopbackOnly || isLocalOnlyPath(url, method)) lines.push(`      x-loopback-only: true`);
+    if (alwaysProtected) lines.push(`      x-always-protected: true`);
     lines.push(`      responses:`);
     lines.push(`        "200":`);
     lines.push(`          description: OK`);

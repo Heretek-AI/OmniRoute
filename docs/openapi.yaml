@@ -8290,7 +8290,6 @@ paths:
         "200":
           description: CodeWhale config entry removed.
 
-
   # --- Generated route coverage (docs audit 2026-08-31) -----------------------
   # Minimal entries for every implemented route not documented above. Methods
   # are parsed from each route.ts's exports; summaries are path-derived.
@@ -8375,6 +8374,7 @@ paths:
       tags:
         - Acp
       summary: "DELETE acp › agents"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8382,6 +8382,7 @@ paths:
       tags:
         - Acp
       summary: "GET acp › agents"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8389,6 +8390,7 @@ paths:
       tags:
         - Acp
       summary: "POST acp › agents"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8604,6 +8606,7 @@ paths:
       tags:
         - Cli tools
       summary: "DELETE cli tools › forge settings"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8611,6 +8614,7 @@ paths:
       tags:
         - Cli tools
       summary: "GET cli tools › forge settings"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8618,6 +8622,7 @@ paths:
       tags:
         - Cli tools
       summary: "POST cli tools › forge settings"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8626,6 +8631,7 @@ paths:
       tags:
         - Cli tools
       summary: "DELETE cli tools › grok build settings"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8633,6 +8639,7 @@ paths:
       tags:
         - Cli tools
       summary: "GET cli tools › grok build settings"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8640,6 +8647,7 @@ paths:
       tags:
         - Cli tools
       summary: "POST cli tools › grok build settings"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8663,6 +8671,7 @@ paths:
       tags:
         - Cli tools
       summary: "DELETE cli tools › jcode settings"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8670,6 +8679,7 @@ paths:
       tags:
         - Cli tools
       summary: "GET cli tools › jcode settings"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8677,6 +8687,7 @@ paths:
       tags:
         - Cli tools
       summary: "POST cli tools › jcode settings"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8693,6 +8704,7 @@ paths:
       tags:
         - Cli tools
       summary: "DELETE cli tools › letta settings"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8700,6 +8712,7 @@ paths:
       tags:
         - Cli tools
       summary: "GET cli tools › letta settings"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8707,6 +8720,7 @@ paths:
       tags:
         - Cli tools
       summary: "POST cli tools › letta settings"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8723,6 +8737,7 @@ paths:
       tags:
         - Cli tools
       summary: "DELETE cli tools › omp settings"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8730,6 +8745,7 @@ paths:
       tags:
         - Cli tools
       summary: "GET cli tools › omp settings"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8737,6 +8753,7 @@ paths:
       tags:
         - Cli tools
       summary: "POST cli tools › omp settings"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8775,6 +8792,7 @@ paths:
       tags:
         - Cli tools
       summary: "DELETE cli tools › qwen settings"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8782,6 +8800,7 @@ paths:
       tags:
         - Cli tools
       summary: "GET cli tools › qwen settings"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -8789,6 +8808,7 @@ paths:
       tags:
         - Cli tools
       summary: "POST cli tools › qwen settings"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9075,6 +9095,7 @@ paths:
       tags:
         - Copilot
       summary: "POST copilot › chat"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9114,6 +9135,7 @@ paths:
       tags:
         - Db backups
       summary: "GET db backups › exportAll"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9145,6 +9167,7 @@ paths:
       tags:
         - Discovery
       summary: "GET discovery › results"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9153,6 +9176,7 @@ paths:
       tags:
         - Discovery
       summary: "DELETE discovery › results › <id>"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9160,6 +9184,7 @@ paths:
       tags:
         - Discovery
       summary: "GET discovery › results › <id>"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9168,6 +9193,7 @@ paths:
       tags:
         - Discovery
       summary: "POST discovery › scan"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9176,6 +9202,7 @@ paths:
       tags:
         - Discovery
       summary: "POST discovery › verify › <id>"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9448,6 +9475,7 @@ paths:
       tags:
         - Headroom
       summary: "POST headroom › start"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9464,6 +9492,7 @@ paths:
       tags:
         - Headroom
       summary: "POST headroom › stop"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9518,6 +9547,7 @@ paths:
       tags:
         - Issue agent
       summary: "GET issue agent › runs"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9525,6 +9555,7 @@ paths:
       tags:
         - Issue agent
       summary: "POST issue agent › runs"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9638,6 +9669,7 @@ paths:
       tags:
         - Local
       summary: "POST local › redis › start"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9646,6 +9678,7 @@ paths:
       tags:
         - Local
       summary: "GET local › redis › status"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9654,6 +9687,7 @@ paths:
       tags:
         - Local
       summary: "POST local › redis › stop"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9701,6 +9735,7 @@ paths:
       tags:
         - Mcp
       summary: "GET mcp › audit"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9709,6 +9744,7 @@ paths:
       tags:
         - Mcp
       summary: "GET mcp › audit › stats"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9717,6 +9753,7 @@ paths:
       tags:
         - Mcp
       summary: "GET mcp › sse"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9724,6 +9761,7 @@ paths:
       tags:
         - Mcp
       summary: "POST mcp › sse"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9732,6 +9770,7 @@ paths:
       tags:
         - Mcp
       summary: "GET mcp › status"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9740,6 +9779,7 @@ paths:
       tags:
         - Mcp
       summary: "DELETE mcp › stream"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9747,6 +9787,7 @@ paths:
       tags:
         - Mcp
       summary: "GET mcp › stream"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9754,6 +9795,7 @@ paths:
       tags:
         - Mcp
       summary: "POST mcp › stream"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9762,6 +9804,7 @@ paths:
       tags:
         - Mcp
       summary: "GET mcp › tools"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9770,6 +9813,7 @@ paths:
       tags:
         - Middleware
       summary: "GET middleware › hooks"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9777,6 +9821,7 @@ paths:
       tags:
         - Middleware
       summary: "POST middleware › hooks"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9785,6 +9830,7 @@ paths:
       tags:
         - Middleware
       summary: "DELETE middleware › hooks › <name>"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9792,6 +9838,7 @@ paths:
       tags:
         - Middleware
       summary: "GET middleware › hooks › <name>"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -9799,6 +9846,7 @@ paths:
       tags:
         - Middleware
       summary: "PUT middleware › hooks › <name>"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10000,6 +10048,7 @@ paths:
       tags:
         - Plugins
       summary: "GET plugins"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10007,6 +10056,7 @@ paths:
       tags:
         - Plugins
       summary: "POST plugins"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10015,6 +10065,7 @@ paths:
       tags:
         - Plugins
       summary: "DELETE plugins › <name>"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10022,6 +10073,7 @@ paths:
       tags:
         - Plugins
       summary: "GET plugins › <name>"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10030,6 +10082,7 @@ paths:
       tags:
         - Plugins
       summary: "POST plugins › <name> › activate"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10038,6 +10091,7 @@ paths:
       tags:
         - Plugins
       summary: "GET plugins › <name> › config"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10045,6 +10099,7 @@ paths:
       tags:
         - Plugins
       summary: "PUT plugins › <name> › config"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10053,6 +10108,7 @@ paths:
       tags:
         - Plugins
       summary: "POST plugins › <name> › deactivate"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10061,6 +10117,7 @@ paths:
       tags:
         - Plugins
       summary: "GET plugins › marketplace"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10069,6 +10126,7 @@ paths:
       tags:
         - Plugins
       summary: "POST plugins › marketplace › install"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10077,6 +10135,7 @@ paths:
       tags:
         - Plugins
       summary: "POST plugins › scan"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10138,6 +10197,7 @@ paths:
       tags:
         - Providers
       summary: "GET providers › <id> › chatgpt web codex doctor"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10200,6 +10260,7 @@ paths:
       tags:
         - Providers
       summary: "POST providers › <id> › login"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10238,6 +10299,7 @@ paths:
       tags:
         - Providers
       summary: "POST providers › <id> › refresh cursor"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10396,6 +10458,7 @@ paths:
       tags:
         - Providers
       summary: "POST providers › health autopilot › actions"
+      x-always-protected: true
       responses:
         "200":
           description: OK
@@ -10436,6 +10499,7 @@ paths:
       tags:
         - Providers
       summary: "POST providers › volcengine plan › connect"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10444,6 +10508,7 @@ paths:
       tags:
         - Providers
       summary: "POST providers › volcengine plan › connect › <sessionId> › cancel"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10452,6 +10517,7 @@ paths:
       tags:
         - Providers
       summary: "POST providers › volcengine plan › connect › <sessionId> › code"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10460,6 +10526,7 @@ paths:
       tags:
         - Providers
       summary: "POST providers › volcengine plan › connect › <sessionId> › identity"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10468,6 +10535,7 @@ paths:
       tags:
         - Providers
       summary: "POST providers › volcengine plan › connect › <sessionId> › resend"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10476,6 +10544,7 @@ paths:
       tags:
         - Providers
       summary: "GET providers › volcengine plan › connect › <sessionId> › status"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10762,6 +10831,7 @@ paths:
       tags:
         - Services
       summary: "GET services › 9router › models"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10770,6 +10840,7 @@ paths:
       tags:
         - Services
       summary: "POST services › 9router › provider expose"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10778,6 +10849,7 @@ paths:
       tags:
         - Services
       summary: "GET services › cliproxy › accounts"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10786,6 +10858,7 @@ paths:
       tags:
         - Services
       summary: "POST services › cliproxy › provider expose"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -10909,6 +10982,7 @@ paths:
       tags:
         - Settings
       summary: "GET settings › database"
+      x-always-protected: true
       responses:
         "200":
           description: OK
@@ -10916,6 +10990,7 @@ paths:
       tags:
         - Settings
       summary: "PATCH settings › database"
+      x-always-protected: true
       responses:
         "200":
           description: OK
@@ -10923,6 +10998,7 @@ paths:
       tags:
         - Settings
       summary: "PUT settings › database"
+      x-always-protected: true
       responses:
         "200":
           description: OK
@@ -10954,6 +11030,7 @@ paths:
       tags:
         - Settings
       summary: "GET settings › export json"
+      x-always-protected: true
       responses:
         "200":
           description: OK
@@ -11039,6 +11116,7 @@ paths:
       tags:
         - Settings
       summary: "POST settings › import json"
+      x-always-protected: true
       responses:
         "200":
           description: OK
@@ -11077,6 +11155,7 @@ paths:
       tags:
         - Settings
       summary: "GET settings › mitm"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11084,6 +11163,7 @@ paths:
       tags:
         - Settings
       summary: "POST settings › mitm"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11091,6 +11171,7 @@ paths:
       tags:
         - Settings
       summary: "PUT settings › mitm"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11567,6 +11648,7 @@ paths:
       tags:
         - Skills
       summary: "POST skills › collect › chaos"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11575,6 +11657,7 @@ paths:
       tags:
         - Skills
       summary: "GET skills › collect › detect"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11583,6 +11666,7 @@ paths:
       tags:
         - Skills
       summary: "POST skills › collect › install"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11700,6 +11784,7 @@ paths:
       tags:
         - System
       summary: "GET system › version"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11707,6 +11792,7 @@ paths:
       tags:
         - System
       summary: "POST system › version"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11715,6 +11801,7 @@ paths:
       tags:
         - Tools
       summary: "GET tools › agent bridge › agents › <id>"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11722,6 +11809,7 @@ paths:
       tags:
         - Tools
       summary: "PATCH tools › agent bridge › agents › <id>"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11730,6 +11818,7 @@ paths:
       tags:
         - Tools
       summary: "GET tools › agent bridge › agents › <id> › detect"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11738,6 +11827,7 @@ paths:
       tags:
         - Tools
       summary: "GET tools › agent bridge › agents › <id> › detected models"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11746,6 +11836,7 @@ paths:
       tags:
         - Tools
       summary: "GET tools › agent bridge › cert › download"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11754,6 +11845,7 @@ paths:
       tags:
         - Tools
       summary: "POST tools › agent bridge › cert › regenerate"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11762,6 +11854,7 @@ paths:
       tags:
         - Tools
       summary: "GET tools › agent bridge › config"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11769,6 +11862,7 @@ paths:
       tags:
         - Tools
       summary: "POST tools › agent bridge › config"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11777,6 +11871,7 @@ paths:
       tags:
         - Tools
       summary: "GET tools › agent bridge › diagnose"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11785,6 +11880,7 @@ paths:
       tags:
         - Tools
       summary: "POST tools › agent bridge › repair"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11793,6 +11889,7 @@ paths:
       tags:
         - Tools
       summary: "DELETE tools › agent bridge › tproxy"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11800,6 +11897,7 @@ paths:
       tags:
         - Tools
       summary: "GET tools › agent bridge › tproxy"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11807,6 +11905,7 @@ paths:
       tags:
         - Tools
       summary: "POST tools › agent bridge › tproxy"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11815,6 +11914,7 @@ paths:
       tags:
         - Tools
       summary: "POST tools › agent bridge › upstream ca › test"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11823,6 +11923,7 @@ paths:
       tags:
         - Tools
       summary: "POST tools › traffic inspector › sessions › <id> › requests"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11839,6 +11940,7 @@ paths:
       tags:
         - Tunnels
       summary: "GET tunnels › cloudflared"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11846,6 +11948,7 @@ paths:
       tags:
         - Tunnels
       summary: "POST tunnels › cloudflared"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11885,6 +11988,7 @@ paths:
       tags:
         - Tunnels
       summary: "POST tunnels › tailscale › disable"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11893,6 +11997,7 @@ paths:
       tags:
         - Tunnels
       summary: "POST tunnels › tailscale › enable"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11901,6 +12006,7 @@ paths:
       tags:
         - Tunnels
       summary: "POST tunnels › tailscale › install"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11909,6 +12015,7 @@ paths:
       tags:
         - Tunnels
       summary: "POST tunnels › tailscale › login"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -11917,6 +12024,7 @@ paths:
       tags:
         - Tunnels
       summary: "POST tunnels › tailscale › start daemon"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -12853,6 +12961,7 @@ paths:
       tags:
         - Vnc session
       summary: "GET vnc session"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -12861,6 +12970,7 @@ paths:
       tags:
         - Vnc session
       summary: "DELETE vnc session › <params>"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -12868,6 +12978,7 @@ paths:
       tags:
         - Vnc session
       summary: "GET vnc session › <params>"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
@@ -12875,6 +12986,7 @@ paths:
       tags:
         - Vnc session
       summary: "POST vnc session › <params>"
+      x-loopback-only: true
       responses:
         "200":
           description: OK
