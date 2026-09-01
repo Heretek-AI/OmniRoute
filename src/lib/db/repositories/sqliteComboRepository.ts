@@ -349,8 +349,20 @@ export async function reorderCombos(comboIds: string[]): Promise<ComboReorderRes
 
 export async function deleteCombo(id: string) {
   const db = getDbInstance();
+  const combo = db.prepare("SELECT name FROM combos WHERE id = ?").get(id) as
+    { name?: string } | undefined;
   const result = db.prepare("DELETE FROM combos WHERE id = ?").run(id);
   if (result.changes === 0) return false;
+
+  if (combo?.name) {
+    try {
+      const { deleteLKGPByComboName } = await import("../settings/lkgp");
+      await deleteLKGPByComboName(combo.name);
+    } catch (error) {
+      console.error("Failed to clean up LKGP pins for deleted combo:", error);
+    }
+  }
+
   return true;
 }
 
