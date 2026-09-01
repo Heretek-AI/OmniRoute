@@ -21,6 +21,7 @@ export type IntelligentRoutingWeights = {
   resetWindowAffinity: number;
   connectionDensity: number;
   quality: number;
+  reliability: number;
 };
 
 export type IntelligentRoutingConfig = {
@@ -64,6 +65,7 @@ export const DEFAULT_INTELLIGENT_WEIGHTS: IntelligentRoutingWeights = {
   resetWindowAffinity: 0,
   connectionDensity: 0.0476,
   quality: 0.03,
+  reliability: 0,
 };
 
 export const MODE_PACK_OPTIONS = [
@@ -104,6 +106,7 @@ export const FACTOR_LABELS: Record<keyof IntelligentRoutingWeights, string> = {
   resetWindowAffinity: "Reset Window",
   connectionDensity: "Connection Spread",
   quality: "Observed Quality",
+  reliability: "Observed Reliability",
 };
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -189,6 +192,8 @@ export function normalizeIntelligentRoutingConfig(config: unknown): IntelligentR
         toFiniteNumber(rawWeights.connectionDensity) ??
         DEFAULT_INTELLIGENT_WEIGHTS.connectionDensity,
       quality: toFiniteNumber(rawWeights.quality) ?? DEFAULT_INTELLIGENT_WEIGHTS.quality,
+      reliability:
+        toFiniteNumber(rawWeights.reliability) ?? DEFAULT_INTELLIGENT_WEIGHTS.reliability,
     },
     routerStrategy:
       typeof configRecord.routerStrategy === "string" &&

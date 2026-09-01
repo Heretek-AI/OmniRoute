@@ -227,7 +227,7 @@ OmniRoute solves the problem of managing multiple AI provider subscriptions, quo
 │   │   ├── accountFallback.ts    # Multi-account fallback
 │   │   ├── sessionManager.ts     # Session management
 │   │   ├── wildcardRouter.ts     # Wildcard model routing
-│   │   ├── autoCombo/            # Auto-combo engine (15-factor scoring, bandit exploration)
+│   │   ├── autoCombo/            # Auto-combo engine (16-factor scoring, bandit exploration)
 │   │   ├── intentClassifier.ts   # Request intent classification
 │   │   ├── taskAwareRouter.ts    # Task-aware routing
 │   │   ├── thinkingBudget.ts     # Thinking budget management
@@ -267,7 +267,7 @@ OmniRoute solves the problem of managing multiple AI provider subscriptions, quo
 │   ├── architecture/             # ARCHITECTURE.md, CODEBASE_DOCUMENTATION.md, REPOSITORY_MAP.md, AUTHZ_GUIDE.md, RESILIENCE_GUIDE.md, QUALITY_GATES.md
 │   ├── reference/                # API_REFERENCE.md, PROVIDER_REFERENCE.md, CLI-TOOLS.md
 │   ├── frameworks/               # MCP-SERVER.md (110 tools), A2A-SERVER.md, SKILLS.md, MEMORY.md, CLOUD_AGENT.md, EVALS.md, WEBHOOKS.md
-│   ├── routing/                  # AUTO-COMBO.md (15-factor scoring), REASONING_REPLAY.md
+│   ├── routing/                  # AUTO-COMBO.md (16-factor scoring), REASONING_REPLAY.md
 │   ├── security/                 # GUARDRAILS.md, COMPLIANCE.md, STEALTH_GUIDE.md, PUBLIC_CREDS.md, ERROR_SANITIZATION.md
 │   ├── guides/                   # USER_GUIDE.md, TROUBLESHOOTING.md, ELECTRON_GUIDE.md, I18N.md
 │   ├── ops/                      # RELEASE_CHECKLIST.md, TUNNELS_GUIDE.md, VM deployment
@@ -286,7 +286,7 @@ OmniRoute solves the problem of managing multiple AI provider subscriptions, quo
 - **19 routing strategies**: priority, weighted, round-robin, fill-first, p2c, random, least-used, cost-optimized, reset-aware, reset-window, headroom, strict-random, auto, lkgp, context-optimized, cache-optimized, context-relay, fusion, pipeline
 - **4-tier fallback**: Subscription → API Key → Cheap → Free
 - **Context Relay strategy**: Session handoff summaries on account rotation for continuity
-- **Auto-combo engine**: Self-healing routing optimization with **15-factor scoring** (see `docs/routing/AUTO-COMBO.md`), bandit exploration, progressive cooldown
+- **Auto-combo engine**: Self-healing routing optimization with **16-factor scoring** (see `docs/routing/AUTO-COMBO.md`), bandit exploration, progressive cooldown
 - **Semantic caching** with cache hit/miss headers
 - **Idempotency** with configurable dedup window
 - **3-layer resilience**: Provider Circuit Breaker / Connection Cooldown / Model Lockout
@@ -445,7 +445,7 @@ diagnostics) plus **memory**, **skill**, **agentSkill**, **githubSkill**, **pool
 
 8. **ACP agents** are in `src/lib/acp/registry.ts` with detection cache. Custom agents stored via settings DB.
 
-9. **Auto-combo engine** in `open-sse/services/autoCombo/` — **15-factor scoring** (weights and factors in `docs/routing/AUTO-COMBO.md`), 6 mode packs, bandit exploration, progressive cooldown.
+9. **Auto-combo engine** in `open-sse/services/autoCombo/` — **16-factor scoring** (weights and factors in `docs/routing/AUTO-COMBO.md`), 6 mode packs, bandit exploration, progressive cooldown.
 
 10. **Docker:** Dockerfile has two targets: `runner-base` and `runner-cli`. `docker-compose.yml` for dev (8 profiles), `docker-compose.prod.yml` for production (port 20130).
 
@@ -480,7 +480,7 @@ diagnostics) plus **memory**, **skill**, **agentSkill**, **githubSkill**, **pool
 
 - **352-provider catalog** with 150+ free tiers, one-click account imports, and bulk key add
 - **19 routing strategies** — including `fusion` (parallel panel + judge synthesis), `pipeline`, `reset-aware`, `reset-window`, `headroom`, and `context-relay`
-- **15-factor Auto-Combo scoring** with bandit exploration and progressive cooldown
+- **16-factor Auto-Combo scoring** with bandit exploration and progressive cooldown
 - **MCP server expanded to 110 tools / 33 scopes** (canonical + memory/skill/agentSkill/githubSkill/pool/notion/obsidian/localCorpus/gamification/plugin modules)
 - **Cloud Agents** (Codex Cloud, Cursor, Devin, Jules), **Guardrails**, **Evals**, **Webhooks**, **Compliance** frameworks
 - **Embedded services** manager (install/start/stop bundled services from the dashboard)

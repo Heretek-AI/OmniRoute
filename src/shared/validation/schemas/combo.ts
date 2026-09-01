@@ -103,6 +103,7 @@ export const scoringWeightsSchema = z
     // PR says so rather than claiming the routing is untouched.
     connectionDensity: z.number().min(0).max(1).optional().default(0.0476),
     quality: z.number().min(0).max(1).optional().default(0.03),
+    reliability: z.number().min(0).max(1).optional().default(0),
   })
   .optional();
 

@@ -370,7 +370,7 @@ Key capabilities:
   **auto**, lkgp, context-optimized, context-relay, **fusion**, plus a fallback path) —
   auto is the headline addition in v3.8.0; `fusion` (panel fan-out + judge synthesis,
   `open-sse/services/fusion.ts`) is new in v3.8.36.
-- **15-factor scoring**: quota, health, inverse cost, inverse latency, task fit and
+- **16-factor scoring**: quota, health, inverse cost, inverse latency, task fit and
   ten more. The canonical table of factors and their default weights lives in
   [`docs/routing/AUTO-COMBO.md`](../routing/AUTO-COMBO.md) — restating it here would
   give it a second place to go stale.
