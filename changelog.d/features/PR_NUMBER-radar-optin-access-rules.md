@@ -1,1 +1,0 @@
-- **feat(radar):** explain Community, single-use, contributor, supporter, recovery, abuse, offers, and privacy rules before either Radar activation action, and remove the superseded fixed-PR grant promise from every UI locale ([#PR_NUMBER](https://github.com/diegosouzapw/OmniRoute/pull/PR_NUMBER))
