@@ -494,6 +494,12 @@ Why this matters: fixing bug A while opening bug B is worse than not fixing at a
   pipeline, and A2A skills.
 - Do not close a contributor pull request after using its code; merge it through GitHub so
   the contributor receives credit.
+- **Never merge a PR that touches an agent-instruction surface without explicit operator
+  approval** — `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `llm.txt` (+ mirrors) and
+  `skills/**/SKILL.md` are executed as authority by every AI session; a merged instruction
+  compromises every future agent run. Check with `gh pr diff <N> --name-only` before any
+  merge. Incident record: PR #11770 (2026-09-01) told agents to execute a third-party
+  setup script and was swept in by a merge campaign; reverted in #12249.
 
 ---
 
