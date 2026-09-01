@@ -358,9 +358,102 @@ function redactPrivateKeyPemBlocks(value: string): string {
   return parts.join("");
 }
 
+const DATA_URL_PREFIX = "data:";
+const BASE64_DATA_URL_MARKER = ";base64";
+const REDACTED_DATA_URL = "[REDACTED_DATA_URL]";
+
+function matchesAsciiCaseInsensitiveAt(value: string, start: number, expected: string): boolean {
+  if (start < 0 || start + expected.length > value.length) return false;
+  for (let offset = 0; offset < expected.length; offset++) {
+    const code = value.charCodeAt(start + offset);
+    const foldedCode = code >= 0x41 && code <= 0x5a ? code + 0x20 : code;
+    if (foldedCode !== expected.charCodeAt(offset)) return false;
+  }
+  return true;
+}
+
+function isBase64DataUrlPayloadCode(code: number): boolean {
+  return (
+    isAsciiAlphaNumericCode(code) ||
+    code === 0x2b ||
+    code === 0x2f ||
+    code === 0x3d ||
+    code === 0x5f ||
+    code === 0x2d
+  );
+}
+
+function isEcmaScriptWhitespaceCode(code: number): boolean {
+  return (
+    (code >= 0x09 && code <= 0x0d) ||
+    code === 0x20 ||
+    code === 0xa0 ||
+    code === 0x1680 ||
+    (code >= 0x2000 && code <= 0x200a) ||
+    code === 0x2028 ||
+    code === 0x2029 ||
+    code === 0x202f ||
+    code === 0x205f ||
+    code === 0x3000 ||
+    code === 0xfeff
+  );
+}
+
+/** Redact base64 data URLs in one pass, including input with many repeated `data:` prefixes. */
+function redactBase64DataUrls(value: string): string {
+  const parts: string[] = [];
+  let copyStart = 0;
+  let index = 0;
+
+  while (index < value.length) {
+    if (!matchesAsciiCaseInsensitiveAt(value, index, DATA_URL_PREFIX)) {
+      index++;
+      continue;
+    }
+
+    const dataUrlStart = index;
+    const mediaTypeStart = dataUrlStart + DATA_URL_PREFIX.length;
+    let delimiter = mediaTypeStart;
+    while (
+      delimiter < value.length &&
+      value[delimiter] !== "," &&
+      !isEcmaScriptWhitespaceCode(value.charCodeAt(delimiter))
+    ) {
+      delimiter++;
+    }
+
+    const markerStart = delimiter - BASE64_DATA_URL_MARKER.length;
+    const hasBase64Marker =
+      delimiter < value.length &&
+      value[delimiter] === "," &&
+      markerStart >= mediaTypeStart &&
+      matchesAsciiCaseInsensitiveAt(value, markerStart, BASE64_DATA_URL_MARKER);
+    if (!hasBase64Marker) {
+      index = delimiter < value.length ? delimiter + 1 : value.length;
+      continue;
+    }
+
+    let payloadEnd = delimiter + 1;
+    while (payloadEnd < value.length && isBase64DataUrlPayloadCode(value.charCodeAt(payloadEnd))) {
+      payloadEnd++;
+    }
+    if (payloadEnd === delimiter + 1) {
+      index = delimiter + 1;
+      continue;
+    }
+
+    parts.push(value.slice(copyStart, dataUrlStart), REDACTED_DATA_URL);
+    copyStart = payloadEnd;
+    index = payloadEnd;
+  }
+
+  if (parts.length === 0) return value;
+  parts.push(value.slice(copyStart));
+  return parts.join("");
+}
+
 export function redactSensitiveErrorText(value: string): string {
-  const commonCredentialsRedacted = redactPrivateKeyPemBlocks(value)
-    .replace(/data:[^,\s]+;base64,[A-Za-z0-9+/=_-]+/gi, "[REDACTED_DATA_URL]")
+  const commonCredentialsRedacted = redactBase64DataUrls(redactPrivateKeyPemBlocks(value))
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "$1 [REDACTED]")
     .replace(STRONG_CREDENTIAL_TOKEN_GLOBAL, "[REDACTED]");
   return redactLabeledCredentialAssignments(commonCredentialsRedacted);

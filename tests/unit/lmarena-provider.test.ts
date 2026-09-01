@@ -647,6 +647,85 @@ describe("LMArena Executor", () => {
     }
   });
 
+  it("does not expose structured upstream error details while preserving classification", async () => {
+    const executor = new LMArenaExecutor();
+    __setTlsFetchOverrideForTesting(async () => ({
+      status: 500,
+      headers: new Headers({ "Content-Type": "application/json" }),
+      text: JSON.stringify({
+        error: {
+          message:
+            "SensitiveDatabaseAdapter failed\n" +
+            "    at loadSecret (/srv/private/lmarena/database.ts:46:7)",
+          stack: "Error: database failure at /srv/private/lmarena/database.ts:46:7",
+          cause: "postgresql://private-user:private-password@internal-db/arena",
+        },
+      }),
+      body: null,
+    }));
+
+    try {
+      const result = await executor.execute({
+        model: TEST_ARENA_MODEL_ID,
+        body: { messages: [{ role: "user", content: "Hello" }] },
+        credentials: { cookie: "session=test" },
+        signal: new AbortController().signal,
+        log: console,
+      });
+
+      assert.equal(result.response.status, 500);
+      const responseText = await result.response.text();
+      const errorBody = JSON.parse(responseText);
+      assert.deepEqual(errorBody.error, {
+        message: "Arena API error: 500",
+        type: "api_error",
+        code: "500",
+      });
+      assert.doesNotMatch(
+        responseText,
+        /SensitiveDatabaseAdapter|loadSecret|database\.ts|private-password|stack|cause/i
+      );
+    } finally {
+      __setTlsFetchOverrideForTesting(null);
+    }
+  });
+
+  it("does not expose plaintext upstream error details while preserving classification", async () => {
+    __setTlsFetchOverrideForTesting(async () => ({
+      status: 500,
+      headers: new Headers({ "Content-Type": "text/plain" }),
+      text:
+        "SensitivePlaintextFailure: internal adapter failed\n" +
+        "    at loadSecret (/srv/private/lmarena/plaintext.ts:71:9)",
+      body: null,
+    }));
+
+    try {
+      const result = await new LMArenaExecutor().execute({
+        model: TEST_ARENA_MODEL_ID,
+        body: { messages: [{ role: "user", content: "Hello" }] },
+        credentials: { cookie: "session=test" },
+        signal: new AbortController().signal,
+        log: console,
+      });
+
+      assert.equal(result.response.status, 500);
+      const responseText = await result.response.text();
+      const errorBody = JSON.parse(responseText);
+      assert.deepEqual(errorBody.error, {
+        message: "Arena API error: 500",
+        type: "api_error",
+        code: "500",
+      });
+      assert.doesNotMatch(
+        responseText,
+        /SensitivePlaintextFailure|internal adapter|loadSecret|plaintext\.ts/i
+      );
+    } finally {
+      __setTlsFetchOverrideForTesting(null);
+    }
+  });
+
   it("sanitizes network failure details before logging or responding", async () => {
     const errorLogs: string[] = [];
     __setTlsFetchOverrideForTesting(async () => {

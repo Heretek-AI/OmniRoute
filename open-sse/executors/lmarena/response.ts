@@ -68,17 +68,6 @@ export function missingCookieResult(
   };
 }
 
-function parseArenaErrorBody(text: string | null | undefined, status: number): string {
-  const fallback = `Arena API error: ${status}`;
-  if (!text) return fallback;
-  try {
-    const errorJson = JSON.parse(text) as { error?: { message?: string }; message?: string };
-    return errorJson.error?.message || errorJson.message || fallback;
-  } catch {
-    return text.slice(0, 500) || fallback;
-  }
-}
-
 function isBotOrChallenge(status: number, text: string | null | undefined): boolean {
   if (status === 403) return true;
   if (isCloudflareChallenge(text)) return true;
@@ -124,8 +113,10 @@ export function mapFailedTlsResult(opts: {
     markLMArenaCatalogModelDead(model);
     markLMArenaCatalogModelDead(arenaModelId);
   }
+  // Fail closed: TLS error bodies can contain upstream stacks, causes, or internal identifiers.
+  // Preserve the HTTP classification without projecting any body-derived text to the caller.
   return {
-    response: errorResponse(status, parseArenaErrorBody(text, status), "api_error", String(status)),
+    response: errorResponse(status, `Arena API error: ${status}`, "api_error", String(status)),
     url,
     headers,
     transformedBody,
