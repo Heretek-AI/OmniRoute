@@ -20,6 +20,7 @@ const { getCircuitBreaker, resetAllCircuitBreakers } =
   await import("../../src/shared/utils/circuitBreaker.ts");
 const { recordProviderCooldown, clearCooldownState } =
   await import("../../open-sse/services/providerCooldownTracker.ts");
+const { PROVIDER_PROFILES } = await import("../../open-sse/config/constants.ts");
 const { resolveResilienceSettings } = await import("../../src/lib/resilience/settings.ts");
 
 const BODY = {
@@ -222,9 +223,13 @@ test("isPinnedTargetModelScopedUnusable distinguishes model lockout from provide
     false
   );
 
-  // Reset breaker, test provider cooldown
+  // Reset breaker, test provider cooldown. Since #12247 the global provider
+  // cooldown honors the PROVIDER_PROFILES window gate: the provider only counts
+  // as cooling after providerFailureThreshold failures inside the window.
   cb.reset();
-  recordProviderCooldown("antigravity", undefined, resilienceSettings);
+  for (let i = 0; i < PROVIDER_PROFILES.oauth.providerFailureThreshold; i++) {
+    recordProviderCooldown("antigravity", undefined, resilienceSettings);
+  }
   assert.equal(
     await isPinnedTargetModelScopedUnusable({
       target,
