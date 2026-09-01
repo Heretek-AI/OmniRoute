@@ -1,13 +1,17 @@
 ---
 title: "Radar Free-Model Catalog"
-version: 3.8.50
-lastUpdated: 2026-08-13
+version: 3.8.51
+lastUpdated: 2026-09-01
 ---
 
 # Radar Free-Model Catalog
 
 > **Source of truth:** `src/lib/radar/`, `src/lib/db/radar.ts`, `src/app/api/radar/`
-> **Last updated:** 2026-08-13 — v3.8.50
+> **Last updated:** 2026-09-01 — v3.8.51
+> **Hosted-service evidence boundary:** server-side rules described here were verified on
+> 2026-09-01 against the intentionally private Radar server at exact revision
+> `main@dce70f004364912f3f144cdb69f4cbcde16093ed`. That implementation is not distributed in
+> this OSS repository; hosted availability remains a separate operational state.
 
 Radar is an **optional add-on** that overlays a signed, freshly-curated free-model
 catalog on top of the release baseline (`FREE_MODEL_BUDGETS` in
@@ -24,7 +28,7 @@ is never mutated on disk — see
 
 ---
 
-## Delivery status in v3.8.50
+## Delivery status in v3.8.51
 
 The following status distinguishes what this OSS release implements from later Radar
 workstreams. It is a code-level status, not a promise that a particular hosted deployment
@@ -112,10 +116,11 @@ When both are on, the sync path is:
 2. This is a download-only application flow, but it is still an HTTPS request. The hosted
    infrastructure receives ordinary connection metadata such as the source IP. When a supporter
    key is configured, sync also sends that key in the Bearer header so the service can resolve the
-   entitlement. Feed-request accounting uses key hashes, aggregate usage, and a daily rotating
-   truncated HMAC of the IP for manual abuse review; those tables persist neither the key nor the
-   IP in raw form. Infrastructure access logs and the encrypted delivery outbox are separate
-   operational boundaries.
+   entitlement. At the exact private-server revision identified in the evidence boundary above,
+   feed-request accounting uses key hashes, aggregate usage, and a daily rotating truncated HMAC
+   of the IP for manual abuse review; those tables persist neither the key nor the IP in raw form.
+   Infrastructure access logs and the encrypted delivery outbox are separate operational
+   boundaries.
 3. OmniRoute never sends prompts, responses, conversations, provider credentials, model traffic,
    uptime, latency, or the local provider configuration to the Radar service.
 4. The response is verified, validated, and cached locally (see
@@ -161,10 +166,11 @@ retroactively revokes or shortens time already awarded.
 
 The hosted license is personal and the user-facing rule is one active installation at a time. This
 release does **not** claim a hardware lock: the OSS sync does not fingerprint hardware or maintain a
-cryptographic device lease. Current enforcement is entitlement validation plus a manual-review
-signal when the same live key is seen from a fourth distinct IP within 24 hours. That signal never
-blocks or revokes a key automatically. Recovery revokes and replaces the lost key while preserving
-the existing expiration; it does not restart the purchased or granted period.
+cryptographic device lease. At the verified private-server revision above, implemented enforcement
+is entitlement validation plus a manual-review signal when the same live key is seen from a fourth
+distinct IP within 24 hours. That signal never blocks or revokes a key automatically. Recovery
+revokes and replaces the lost key while preserving the existing expiration; it does not restart the
+purchased or granted period.
 
 Live offers are manually curated and can change or expire. The opt-in screen also names the exact
 privacy boundary: signed catalog/referral metadata is downloaded; a valid key additionally unlocks
