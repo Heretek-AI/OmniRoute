@@ -224,7 +224,9 @@ import {
   createErrorResult,
   parseUpstreamError,
   formatProviderError,
+  projectPublicErrorIdentifier,
   sanitizeErrorMessage,
+  sanitizeUpstreamDetails,
 } from "../utils/error.ts";
 import {
   reportMalformed200,
@@ -266,8 +268,10 @@ import { recordKeyHealthStatus as recordKeyHealthStatusFor } from "./chatCore/ke
 import { getSkillsModelIdForFormat } from "./chatCore/skillsFormat.ts";
 import { readNonStreamingResponseBody } from "./chatCore/nonStreamingResponseBody.ts";
 import {
-  isSemaphoreCapacityError,
+  createSafeAbortError,
   createStreamingErrorResult,
+  formatStreamRecoveryRetryWarning,
+  getSafeErrorMetadata,
   getUpstreamErrorIdentifier,
 } from "./chatCore/streamErrorResult.ts";
 import { wrapReadableStreamWithFinalize } from "./chatCore/streamFinalize.ts";
@@ -596,12 +600,11 @@ export async function handleChatCore({
       status: 409,
     });
   };
-  const isManagedLeaseFenceError = (error: unknown): boolean =>
-    managedLease !== null &&
-    typeof (error as { code?: unknown })?.code === "string" &&
-    String((error as { code: string }).code).startsWith("LEASE_");
-  const managedLeaseFenceErrorResult = (error: unknown) => {
-    const code = (error as { code: string }).code;
+  const getManagedLeaseFenceErrorCode = (code: string | undefined): string | undefined => {
+    if (managedLease === null) return undefined;
+    return code?.startsWith("LEASE_") ? code : undefined;
+  };
+  const managedLeaseFenceErrorResult = (code: string) => {
     return {
       ...createErrorResult(409, "Managed lease request fence rejected the dispatch", null, code),
       errorType: "lease_error",
@@ -2433,48 +2436,47 @@ export async function handleChatCore({
         error instanceof Error ? error : new Error(String(error))
       );
     } catch (pluginErr) {
-      log?.debug?.(
-        "PLUGIN",
-        `onError hook error (non-fatal): ${pluginErr instanceof Error ? pluginErr.message : String(pluginErr)}`
-      );
+      const pluginErrorMessage = sanitizeErrorMessage(pluginErr) || "Plugin onError hook failed";
+      log?.debug?.("PLUGIN", `onError hook error (non-fatal): ${pluginErrorMessage}`);
     }
 
-    const parsedStatus = Number(error?.statusCode);
+    let parsedStatus = Number.NaN;
+    try {
+      parsedStatus = Number(error?.statusCode);
+    } catch {
+      // Hostile thrown values may expose Symbols or throwing status accessors.
+    }
     const statusCode =
       Number.isInteger(parsedStatus) && parsedStatus >= 400 && parsedStatus <= 599
         ? parsedStatus
         : HTTP_STATUS.SERVER_ERROR;
-    const message = error?.message || "Invalid request";
-    const errorType = typeof error?.errorType === "string" ? error.errorType : null;
-
-    log?.warn?.("TRANSLATE", `Request translation failed: ${message}`);
-
-    if (errorType) {
-      trackPendingRequest(model, provider, connectionId, false);
-      return {
-        success: false,
-        status: statusCode,
-        error: message,
-        response: new Response(
-          JSON.stringify({
-            error: {
-              message,
-              type: errorType,
-              code: errorType,
-            },
-          }),
-          {
-            status: statusCode,
-            headers: {
-              "Content-Type": "application/json",
-            },
-          }
-        ),
-      };
+    let message = "Invalid request";
+    try {
+      const candidate = error?.message;
+      message =
+        (typeof candidate === "string" ? candidate : sanitizeErrorMessage(candidate)) || message;
+    } catch {
+      // Hostile thrown values may expose throwing property accessors.
+    }
+    let errorType: string | null = null;
+    try {
+      const candidate = error?.errorType;
+      errorType = typeof candidate === "string" ? candidate : null;
+    } catch {
+      // Hostile thrown values may expose throwing classification accessors.
     }
 
+    const result = createErrorResult(
+      statusCode,
+      message,
+      null,
+      errorType ?? undefined,
+      errorType ?? undefined
+    );
+    log?.warn?.("TRANSLATE", `Request translation failed: ${result.error}`);
+
     trackPendingRequest(model, provider, connectionId, false);
-    return createErrorResult(statusCode, message);
+    return result;
   }
 
   // The latest OmniGlyph release has protocol-native OpenAI transforms. Run
@@ -3458,9 +3460,11 @@ export async function handleChatCore({
                       onRetry: (attempt, err) =>
                         log?.warn?.(
                           "STREAM_RECOVERY",
-                          `transparent early-retry ${attempt}/${STREAM_RECOVERY.EARLY_RETRY_MAX} after ${
-                            (err as { name?: string })?.name || "truncation"
-                          }`
+                          formatStreamRecoveryRetryWarning(
+                            attempt,
+                            STREAM_RECOVERY.EARLY_RETRY_MAX,
+                            err
+                          )
                         ),
                       continueStream,
                       onContinue: (attempt) =>
@@ -3717,15 +3721,21 @@ export async function handleChatCore({
     }
   } catch (error) {
     trackPendingRequest(model, provider, connectionId, false);
-    if (isManagedLeaseFenceError(error)) return managedLeaseFenceErrorResult(error);
-    if (isSemaphoreCapacityError(error)) {
+    const errorMetadata = getSafeErrorMetadata(error);
+    const managedLeaseFenceCode = getManagedLeaseFenceErrorCode(errorMetadata.code);
+    if (managedLeaseFenceCode) return managedLeaseFenceErrorResult(managedLeaseFenceCode);
+    if (
+      errorMetadata.code === "SEMAPHORE_TIMEOUT" ||
+      errorMetadata.code === "SEMAPHORE_QUEUE_FULL"
+    ) {
+      const semaphoreCode = errorMetadata.code as "SEMAPHORE_TIMEOUT" | "SEMAPHORE_QUEUE_FULL";
       appendRequestLog({
         model,
         provider,
         connectionId,
-        status: `FAILED ${error.code}`,
+        status: `FAILED ${semaphoreCode}`,
       }).catch(() => {});
-      const failureMessage = error.message || "Semaphore timeout";
+      const failureMessage = sanitizeErrorMessage(errorMetadata.message) || "Semaphore timeout";
       persistAttemptLogs({
         status: HTTP_STATUS.RATE_LIMITED,
         error: failureMessage,
@@ -3734,25 +3744,32 @@ export async function handleChatCore({
         claudeCacheMeta: claudePromptCacheLogMeta,
         cacheSource: "upstream",
       });
-      persistFailureUsage(HTTP_STATUS.RATE_LIMITED, error.code);
+      persistFailureUsage(HTTP_STATUS.RATE_LIMITED, semaphoreCode);
       const result = stream
-        ? createStreamingErrorResult(HTTP_STATUS.RATE_LIMITED, failureMessage, error.code)
+        ? createStreamingErrorResult(HTTP_STATUS.RATE_LIMITED, failureMessage, semaphoreCode)
         : createErrorResult(HTTP_STATUS.RATE_LIMITED, failureMessage);
       return {
         ...result,
         errorType: "account_semaphore_capacity",
-        errorCode: error.code,
+        errorCode: semaphoreCode,
       };
     }
     // abort(reason) can reject with a raw string lacking `name`/`status`; classify
     // it through isLocalStreamLifecycleError so it maps to 499 rather than the
     // 502 provider-failure default.
-    const isRequestAborted = isLocalStreamLifecycleError(error);
+    let isRequestAborted = errorMetadata.name === "AbortError";
+    if (!isRequestAborted) {
+      try {
+        isRequestAborted = isLocalStreamLifecycleError(error);
+      } catch {
+        // A hostile Proxy must not escape the provider-error boundary during abort classification.
+      }
+    }
     // #8376: proxyFetch tags unreachable transport failures so they remain
     // distinguishable from ordinary provider 5xx responses.
     const isProxyUnreachableFailure =
-      !isRequestAborted && (error as { errorCode?: unknown })?.errorCode === "proxy_unreachable";
-    const errorCode = getUpstreamErrorIdentifier(error);
+      !isRequestAborted && errorMetadata.errorCode === "proxy_unreachable";
+    const errorCode = errorMetadata.code;
     const localRateLimitFailure = localLimiterErrors.getClientSafeLocalRateLimitError(error);
     const failureStatus = isRequestAborted
       ? 499
@@ -3760,14 +3777,27 @@ export async function handleChatCore({
         ? HTTP_STATUS.BAD_GATEWAY
         : localRateLimitFailure
           ? localRateLimitFailure.status
-          : error.name === "TimeoutError" || error.name === "BodyTimeoutError"
+          : errorMetadata.name === "TimeoutError" || errorMetadata.name === "BodyTimeoutError"
             ? HTTP_STATUS.GATEWAY_TIMEOUT
-            : error.status && typeof error.status === "number"
-              ? error.status
+            : errorMetadata.status
+              ? errorMetadata.status
               : HTTP_STATUS.BAD_GATEWAY;
     const failureMessage = isRequestAborted
       ? "Request aborted"
-      : formatProviderError(localRateLimitFailure ?? error, provider, model, failureStatus);
+      : (() => {
+          try {
+            return formatProviderError(
+              localRateLimitFailure ?? error,
+              provider,
+              model,
+              failureStatus
+            );
+          } catch {
+            // Formatting is diagnostic only; hostile rejection metadata falls back safely.
+            return errorMetadata.message || "Upstream provider error";
+          }
+        })();
+    const safeFailureMessage = sanitizeErrorMessage(failureMessage) || "Upstream provider error";
     const upstreamErrorCode =
       localRateLimitFailure?.code ?? (isProxyUnreachableFailure ? "proxy_unreachable" : errorCode);
     // Tag our own deadline timeouts (fetch-start TimeoutError / body BodyTimeoutError,
@@ -3776,7 +3806,7 @@ export async function handleChatCore({
     // tags its pre-response timeout via the code below.)
     const isOwnDeadlineTimeout =
       failureStatus === HTTP_STATUS.GATEWAY_TIMEOUT &&
-      (error.name === "TimeoutError" || error.name === "BodyTimeoutError");
+      (errorMetadata.name === "TimeoutError" || errorMetadata.name === "BodyTimeoutError");
     const upstreamErrorType =
       upstreamErrorCode === ANTIGRAVITY_PRE_RESPONSE_TIMEOUT_CODE || isOwnDeadlineTimeout
         ? "upstream_timeout"
@@ -3791,7 +3821,7 @@ export async function handleChatCore({
     }).catch(() => {});
     persistAttemptLogs({
       status: failureStatus,
-      error: failureMessage,
+      error: safeFailureMessage,
       providerRequest: finalBody || translatedBody,
       // On a client-abort (AbortError), the client already disconnected before
       // we ever got here — this body is what we WOULD have sent, not what was
@@ -3799,19 +3829,22 @@ export async function handleChatCore({
       // dashboard reads that field as "what the client received"), so omit it
       // for this case; `error` above already records the failure reason.
       clientResponse:
-        error.name === "AbortError" ? undefined : buildErrorBody(failureStatus, failureMessage),
+        errorMetadata.name === "AbortError"
+          ? undefined
+          : buildErrorBody(failureStatus, failureMessage),
       claudeCacheMeta: claudePromptCacheLogMeta,
       cacheSource: "upstream",
     });
     if (isRequestAborted) {
-      streamController.handleError(error);
+      streamController.handleError(createSafeAbortError());
       return createErrorResult(499, "Request aborted");
     }
-    persistFailureUsage(
-      failureStatus,
-      upstreamErrorCode || (error instanceof Error && error.name ? error.name : "upstream_error")
+    const failureUsageCode = projectPublicErrorIdentifier(
+      upstreamErrorCode || errorMetadata.name,
+      "upstream_error"
     );
-    console.log(`${COLORS.red}[ERROR] ${failureMessage}${COLORS.reset}`);
+    persistFailureUsage(failureStatus, failureUsageCode);
+    console.log(`${COLORS.red}[ERROR] ${safeFailureMessage}${COLORS.reset}`);
     if (stream && upstreamErrorCode) {
       const result = createStreamingErrorResult(
         failureStatus,
@@ -3972,7 +4005,10 @@ export async function handleChatCore({
           upstreamErrorParsed = false; // Let it be parsed downstream
         }
       } catch (retryErr) {
-        if (isManagedLeaseFenceError(retryErr)) return managedLeaseFenceErrorResult(retryErr);
+        const retryLeaseFenceCode = getManagedLeaseFenceErrorCode(
+          getUpstreamErrorIdentifier(retryErr)
+        );
+        if (retryLeaseFenceCode) return managedLeaseFenceErrorResult(retryLeaseFenceCode);
         // Refresh succeeded but the retry leg failed (network blip, AbortError,
         // executor throw). Don't swallow — the operator-visible signal "the user
         // saw 401 even though auth was actually fixed" is much more confusing
@@ -4032,8 +4068,8 @@ export async function handleChatCore({
       message = details.message;
       retryAfterMs = details.retryAfterMs;
       upstreamErrorBody = details.responseBody;
-      upstreamErrorCode = details.errorCode as string | undefined;
-      upstreamErrorType = details.errorType as string | undefined;
+      upstreamErrorCode = typeof details.errorCode === "string" ? details.errorCode : undefined;
+      upstreamErrorType = typeof details.errorType === "string" ? details.errorType : undefined;
     }
 
     // Gateways like agentrouter misstate temporary quota exhaustion as 403/400,
@@ -4089,8 +4125,14 @@ export async function handleChatCore({
         message = signatureRecovery.error.message;
         retryAfterMs = signatureRecovery.error.retryAfterMs;
         upstreamErrorBody = signatureRecovery.error.responseBody;
-        upstreamErrorCode = signatureRecovery.error.errorCode as string | undefined;
-        upstreamErrorType = signatureRecovery.error.errorType as string | undefined;
+        upstreamErrorCode =
+          typeof signatureRecovery.error.errorCode === "string"
+            ? signatureRecovery.error.errorCode
+            : undefined;
+        upstreamErrorType =
+          typeof signatureRecovery.error.errorType === "string"
+            ? signatureRecovery.error.errorType
+            : undefined;
       }
     }
 
@@ -4225,79 +4267,84 @@ export async function handleChatCore({
                 `[provider] Node ${errorConnectionId} probe ${errorType} (${statusCode}) — connection stays active`
               );
             } else {
-            // Kimi's 403 says "billing cycle" for both an exhausted subscription and a
-            // temporary request window. Read its official usage endpoint before making
-            // the connection terminal: a non-zero Weekly quota plus an empty Ratelimit
-            // window must recover automatically at the reported reset time.
-            let kimiRateLimitResetAt: string | null = null;
-            if (provider === "kimi-coding") {
-              try {
-                const { fetchAndPersistProviderLimits } =
-                  await import("@/lib/usage/providerLimits");
-                const { usage } = await fetchAndPersistProviderLimits(errorConnectionId, "manual");
-                kimiRateLimitResetAt = getKimiTemporaryRateLimitResetAt(usage);
-              } catch {
-                // Preserve the existing quota handling when Kimi's usage endpoint is unavailable.
+              // Kimi's 403 says "billing cycle" for both an exhausted subscription and a
+              // temporary request window. Read its official usage endpoint before making
+              // the connection terminal: a non-zero Weekly quota plus an empty Ratelimit
+              // window must recover automatically at the reported reset time.
+              let kimiRateLimitResetAt: string | null = null;
+              if (provider === "kimi-coding") {
+                try {
+                  const { fetchAndPersistProviderLimits } =
+                    await import("@/lib/usage/providerLimits");
+                  const { usage } = await fetchAndPersistProviderLimits(
+                    errorConnectionId,
+                    "manual"
+                  );
+                  kimiRateLimitResetAt = getKimiTemporaryRateLimitResetAt(usage);
+                } catch {
+                  // Preserve the existing quota handling when Kimi's usage endpoint is unavailable.
+                }
               }
-            }
 
-            // Providers with per-model quotas — lock the model only, not the connection
-            const quotaCooldownMs = kimiRateLimitResetAt
-              ? Math.max(new Date(kimiRateLimitResetAt).getTime() - Date.now(), 0)
-              : retryAfterMs || COOLDOWN_MS.rateLimit;
-            const accountSemaphoreKey = resolveAccountSemaphoreKey({
-              provider,
-              model: currentModel,
-              connectionId: errorConnectionId,
-              credentials,
-            });
-            if (accountSemaphoreKey) {
-              markAccountSemaphoreBlocked(accountSemaphoreKey, quotaCooldownMs);
-            }
-            if (kimiRateLimitResetAt) {
-              await updateProviderConnection(errorConnectionId, {
-                testStatus: "unavailable",
-                rateLimitedUntil: kimiRateLimitResetAt,
-                backoffLevel: 0,
-                lastErrorType: PROVIDER_ERROR_TYPES.RATE_LIMITED,
-                lastError: message,
-                errorCode: statusCode,
-              });
-              console.warn(
-                `[provider] Node ${errorConnectionId} Kimi request window exhausted (${statusCode}) — retrying after ${kimiRateLimitResetAt}`
-              );
-            } else if (isModelScope() && errorConnectionId) {
-              const lockFn = provider === "antigravity" ? lockExactModel : lockModel;
-              lockFn(provider, errorConnectionId, model, "quota_exhausted", quotaCooldownMs);
-              console.warn(
-                `[provider] Node ${errorConnectionId} ModelScope model quota exhausted (${statusCode}) for ${model} - ${Math.ceil(quotaCooldownMs / 1000)}s (connection stays active)`
-              );
-            } else if (
-              lockModelIfPerModelQuota(
+              // Providers with per-model quotas — lock the model only, not the connection
+              const quotaCooldownMs = kimiRateLimitResetAt
+                ? Math.max(new Date(kimiRateLimitResetAt).getTime() - Date.now(), 0)
+                : retryAfterMs || COOLDOWN_MS.rateLimit;
+              const accountSemaphoreKey = resolveAccountSemaphoreKey({
                 provider,
-                errorConnectionId,
-                model,
-                "quota_exhausted",
-                quotaCooldownMs
-              )
-            ) {
-              const quotaScope = getQuotaScopeLabelForProvider(provider, model);
-              console.warn(
-                `[provider] Node ${errorConnectionId} ${quotaScope}-only quota exhausted (${statusCode}) for ${model} - ${Math.ceil(quotaCooldownMs / 1000)}s (cooldown_scope=${quotaScope}, ttl_source=${retryAfterMs ? "upstream" : "inferred"}, connection stays active)`
-              );
-            } else {
-              await writeTerminalStatus(
-                errorConnectionId,
-                {
-                  testStatus: "credits_exhausted",
+                model: currentModel,
+                connectionId: errorConnectionId,
+                credentials,
+              });
+              if (accountSemaphoreKey) {
+                markAccountSemaphoreBlocked(accountSemaphoreKey, quotaCooldownMs);
+              }
+              if (kimiRateLimitResetAt) {
+                await updateProviderConnection(errorConnectionId, {
+                  testStatus: "unavailable",
+                  rateLimitedUntil: kimiRateLimitResetAt,
+                  backoffLevel: 0,
+                  lastErrorType: PROVIDER_ERROR_TYPES.RATE_LIMITED,
                   lastError: message,
-                  lastErrorType: errorType,
-                  errorCode: String(statusCode),
-                },
-                "production"
-              );
-              console.warn(`[provider] Node ${errorConnectionId} exhausted quota (${statusCode})`);
-            }
+                  errorCode: statusCode,
+                });
+                console.warn(
+                  `[provider] Node ${errorConnectionId} Kimi request window exhausted (${statusCode}) — retrying after ${kimiRateLimitResetAt}`
+                );
+              } else if (isModelScope() && errorConnectionId) {
+                const lockFn = provider === "antigravity" ? lockExactModel : lockModel;
+                lockFn(provider, errorConnectionId, model, "quota_exhausted", quotaCooldownMs);
+                console.warn(
+                  `[provider] Node ${errorConnectionId} ModelScope model quota exhausted (${statusCode}) for ${model} - ${Math.ceil(quotaCooldownMs / 1000)}s (connection stays active)`
+                );
+              } else if (
+                lockModelIfPerModelQuota(
+                  provider,
+                  errorConnectionId,
+                  model,
+                  "quota_exhausted",
+                  quotaCooldownMs
+                )
+              ) {
+                const quotaScope = getQuotaScopeLabelForProvider(provider, model);
+                console.warn(
+                  `[provider] Node ${errorConnectionId} ${quotaScope}-only quota exhausted (${statusCode}) for ${model} - ${Math.ceil(quotaCooldownMs / 1000)}s (cooldown_scope=${quotaScope}, ttl_source=${retryAfterMs ? "upstream" : "inferred"}, connection stays active)`
+                );
+              } else {
+                await writeTerminalStatus(
+                  errorConnectionId,
+                  {
+                    testStatus: "credits_exhausted",
+                    lastError: message,
+                    lastErrorType: errorType,
+                    errorCode: String(statusCode),
+                  },
+                  "production"
+                );
+                console.warn(
+                  `[provider] Node ${errorConnectionId} exhausted quota (${statusCode})`
+                );
+              }
             } // close probeIsolated3 else
           }
         } else if (errorType === PROVIDER_ERROR_TYPES.UNAUTHORIZED) {
@@ -4408,7 +4455,9 @@ export async function handleChatCore({
     }).catch(() => {});
 
     const errMsg = formatProviderError(new Error(message), provider, model, statusCode);
-    console.log(`${COLORS.red}[ERROR] ${errMsg}${COLORS.reset}`);
+    const safeErrMsg = sanitizeErrorMessage(errMsg) || "Upstream provider error";
+    const safeUpstreamErrorBody = sanitizeUpstreamDetails(upstreamErrorBody);
+    console.log(`${COLORS.red}[ERROR] ${safeErrMsg}${COLORS.reset}`);
 
     // Log Antigravity retry time if available
     if (retryAfterMs && provider === "antigravity") {
@@ -4422,7 +4471,7 @@ export async function handleChatCore({
       providerResponse.status,
       providerResponse.statusText,
       providerResponse.headers,
-      upstreamErrorBody
+      safeUpstreamErrorBody
     );
 
     // Update rate limiter from error response headers
@@ -4464,9 +4513,9 @@ export async function handleChatCore({
             // Fallback also failed — return original error
             persistAttemptLogs({
               status: statusCode,
-              error: errMsg,
+              error: safeErrMsg,
               providerRequest: finalBody || translatedBody,
-              providerResponse: upstreamErrorBody,
+              providerResponse: safeUpstreamErrorBody,
               clientResponse: buildErrorBody(statusCode, errMsg),
               cacheSource: "upstream",
             });
@@ -4484,9 +4533,9 @@ export async function handleChatCore({
         } catch {
           persistAttemptLogs({
             status: statusCode,
-            error: errMsg,
+            error: safeErrMsg,
             providerRequest: finalBody || translatedBody,
-            providerResponse: upstreamErrorBody,
+            providerResponse: safeUpstreamErrorBody,
             clientResponse: buildErrorBody(statusCode, errMsg),
             cacheSource: "upstream",
           });
@@ -4504,9 +4553,9 @@ export async function handleChatCore({
       } else {
         persistAttemptLogs({
           status: statusCode,
-          error: errMsg,
+          error: safeErrMsg,
           providerRequest: finalBody || translatedBody,
-          providerResponse: upstreamErrorBody,
+          providerResponse: safeUpstreamErrorBody,
           clientResponse: buildErrorBody(statusCode, errMsg),
           cacheSource: "upstream",
         });
@@ -4553,9 +4602,9 @@ export async function handleChatCore({
           } else {
             persistAttemptLogs({
               status: statusCode,
-              error: errMsg,
+              error: safeErrMsg,
               providerRequest: finalBody || translatedBody,
-              providerResponse: upstreamErrorBody,
+              providerResponse: safeUpstreamErrorBody,
               clientResponse: buildErrorBody(statusCode, errMsg),
               cacheSource: "upstream",
             });
@@ -4573,9 +4622,9 @@ export async function handleChatCore({
         } catch {
           persistAttemptLogs({
             status: statusCode,
-            error: errMsg,
+            error: safeErrMsg,
             providerRequest: finalBody || translatedBody,
-            providerResponse: upstreamErrorBody,
+            providerResponse: safeUpstreamErrorBody,
             clientResponse: buildErrorBody(statusCode, errMsg),
             cacheSource: "upstream",
           });
@@ -4593,9 +4642,9 @@ export async function handleChatCore({
       } else {
         persistAttemptLogs({
           status: statusCode,
-          error: errMsg,
+          error: safeErrMsg,
           providerRequest: finalBody || translatedBody,
-          providerResponse: upstreamErrorBody,
+          providerResponse: safeUpstreamErrorBody,
           clientResponse: buildErrorBody(statusCode, errMsg),
           cacheSource: "upstream",
         });
@@ -4613,9 +4662,9 @@ export async function handleChatCore({
     } else {
       persistAttemptLogs({
         status: statusCode,
-        error: errMsg,
+        error: safeErrMsg,
         providerRequest: finalBody || translatedBody,
-        providerResponse: upstreamErrorBody,
+        providerResponse: safeUpstreamErrorBody,
         clientResponse: buildErrorBody(statusCode, errMsg),
         cacheSource: "upstream",
       });
@@ -4662,11 +4711,13 @@ export async function handleChatCore({
         status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}`,
       }).catch(() => {});
       const invalidSseMessage = parsed.message;
+      const safeInvalidSseMessage =
+        sanitizeErrorMessage(invalidSseMessage) || "Invalid SSE response for non-streaming request";
       persistAttemptLogs({
         status: HTTP_STATUS.BAD_GATEWAY,
-        error: invalidSseMessage,
+        error: safeInvalidSseMessage,
         providerRequest: finalBody || translatedBody,
-        providerResponse: normalizedProviderPayload,
+        providerResponse: sanitizeUpstreamDetails(normalizedProviderPayload),
         clientResponse: buildErrorBody(HTTP_STATUS.BAD_GATEWAY, invalidSseMessage),
         cacheSource: "upstream",
       });
@@ -4684,11 +4735,12 @@ export async function handleChatCore({
       }).catch(() => {});
       const detailedError = parsed.detailedError;
       const invalidJsonMessage = parsed.message;
+      const safeDetailedError = sanitizeErrorMessage(detailedError) || invalidJsonMessage;
       persistAttemptLogs({
         status: HTTP_STATUS.BAD_GATEWAY,
-        error: detailedError,
+        error: safeDetailedError,
         providerRequest: finalBody || translatedBody,
-        providerResponse: normalizedProviderPayload,
+        providerResponse: sanitizeUpstreamDetails(normalizedProviderPayload),
         clientResponse: buildErrorBody(HTTP_STATUS.BAD_GATEWAY, invalidJsonMessage),
         cacheSource: "upstream",
       });
@@ -4735,12 +4787,10 @@ export async function handleChatCore({
             }
           }
         } catch (retryErr) {
-          log?.warn?.(
-            "RETRY",
-            `clinepass retry failed: ${
-              retryErr instanceof Error ? retryErr.message : String(retryErr)
-            }`
-          );
+          const retryMessage =
+            sanitizeErrorMessage(getSafeErrorMetadata(retryErr).message ?? retryErr) ||
+            "Upstream provider error";
+          log?.warn?.("RETRY", `clinepass retry failed: ${retryMessage}`);
         }
       }
       if (envError) {
@@ -4777,7 +4827,7 @@ export async function handleChatCore({
         status: HTTP_STATUS.BAD_GATEWAY,
         error: emptyContentMessage,
         providerRequest: finalBody || translatedBody,
-        providerResponse: normalizedProviderPayload,
+        providerResponse: sanitizeUpstreamDetails(normalizedProviderPayload),
         clientResponse: buildErrorBody(HTTP_STATUS.BAD_GATEWAY, emptyContentMessage),
         cacheSource: "upstream",
       });
@@ -5144,14 +5194,26 @@ export async function handleChatCore({
       const malformedClientBody = buildErrorBody(HTTP_STATUS.BAD_GATEWAY, malformedMessage);
       malformedClientBody.error.code = malformed.code;
       malformedClientBody.error.type = malformed.type;
+      const sanitizedMalformedResponse = sanitizeUpstreamDetails(responseBody);
+      const sanitizedMalformedProviderResponse = looksLikeSSE
+        ? {
+            _streamed: true,
+            _format: "sse-json",
+            summary: sanitizedMalformedResponse,
+          }
+        : sanitizedMalformedResponse;
+      reqLogger.logProviderResponse(
+        providerResponse.status,
+        providerResponse.statusText,
+        providerResponse.headers,
+        sanitizedMalformedProviderResponse
+      );
       persistAttemptLogs({
         status: HTTP_STATUS.BAD_GATEWAY,
         tokens: usage,
-        responseBody,
+        responseBody: sanitizedMalformedResponse,
         providerRequest: finalBody || translatedBody,
-        providerResponse: looksLikeSSE
-          ? { _streamed: true, _format: "sse-json", summary: responseBody }
-          : responseBody,
+        providerResponse: sanitizedMalformedProviderResponse,
         clientResponse: malformedClientBody,
         claudeCacheMeta: claudePromptCacheLogMeta,
         claudeCacheUsageMeta: cacheUsageLogMeta,

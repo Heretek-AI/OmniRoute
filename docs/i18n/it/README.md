@@ -397,7 +397,7 @@ Tutte e **19** le strategie — combinabili liberamente per ogni passaggio della
 
 </div>
 
-<img src="../../diagrams/comparison-table.svg" width="100%" alt="Cosa distingue OmniRoute — tabella di confronto con 9router, OpenRouter, CLIProxyAPI e LiteLLM su 13 capacità. OmniRoute: 349 provider, oltre 90 provider gratuiti integrati, 19 strategie di routing, compressione token con 12 motori, server MCP integrato con 110 tool, protocollo agenti A2A, memoria persistente, guardrail, cloud agent, TLS fingerprint stealth, Desktop/Termux/PWA, 43 locale UI i18n, self-hosting 100% MIT. OmniRoute è l'unico a includere l'intero insieme; i concorrenti mostrano combinazioni di supporto completo, parziale e assente. Verificato sulla documentazione di ciascun progetto."/>
+<img src="../../diagrams/comparison-table.svg" width="100%" alt="Cosa distingue OmniRoute — tabella di confronto con 9router, OpenRouter, CLIProxyAPI e LiteLLM su 13 capacità. OmniRoute: 352 provider, oltre 90 provider gratuiti integrati, 19 strategie di routing, compressione token con 12 motori, server MCP integrato con 110 tool, protocollo agenti A2A, memoria persistente, guardrail, cloud agent, TLS fingerprint stealth, Desktop/Termux/PWA e 43 locale UI i18n. Il codice proprio di OmniRoute è MIT; le dipendenze opzionali di terze parti mantengono le rispettive licenze. OmniRoute è l'unico a includere l'intero insieme; i concorrenti mostrano combinazioni di supporto completo, parziale e assente. Verificato sulla documentazione di ciascun progetto."/>
 
 <sub>📊 Metodologia completa e dettaglio per funzionalità rispetto a 9router, OpenRouter, CLIProxyAPI e LiteLLM → [`docs/comparison/OMNIROUTE_VS_ALTERNATIVES.md`](../../comparison/OMNIROUTE_VS_ALTERNATIVES.md)</sub>
 
@@ -406,7 +406,11 @@ Tutte e **19** le strategie — combinabili liberamente per ogni passaggio della
 <a id="-support-omniroute"></a>
 ## 💚 Supporta OmniRoute
 
-OmniRoute è distribuito con licenza MIT e mantenuto apertamente. Se ti fa risparmiare tempo o denaro, ecco come aiutarlo a restare indipendente — scegli ciò che preferisci. Le sponsorizzazioni non influenzano mai la priorità del routing: acquistano visibilità, non posizionamento.
+Il codice proprio di OmniRoute è distribuito con licenza MIT e mantenuto apertamente; i
+componenti di terze parti inclusi e opzionali mantengono le rispettive licenze. Se ti fa
+risparmiare tempo o denaro, ecco come aiutarlo a restare indipendente — scegli ciò che preferisci.
+Le sponsorizzazioni non influenzano mai la priorità del routing: acquistano visibilità, non
+posizionamento.
 
 <table>
   <tr><td nowrap>⭐ <b>Metti una stella alla repo</b></td><td>Gratis — aiuta davvero la visibilità</td><td><a href="https://github.com/diegosouzapw/OmniRoute">Dai una stella a OmniRoute</a></td></tr>
@@ -701,7 +705,7 @@ Dall'editor: apri la vista **Extensions**, cerca **"OmniRoute"**, fai clic su **
 
 </div>
 
-<img src="../../diagrams/privacy-local.svg" width="100%" alt="Privato e local-first — le tue chiavi, la tua macchina, i tuoi dati; OmniRoute è un proxy locale che non comunica autonomamente con servizi cloud. Undici garanzie: gira al 100% sul tuo hardware (0 passaggi cloud), telemetria disattivata per impostazione predefinita, credenziali cifrate a riposo (AES-256-GCM), nessun account o registrazione, gateway rafforzato (scoping delle API key, filtro IP, rate limit, difesa dalla prompt injection), route di processo limitate al loopback, pulizia degli header upstream, redazione PII rigorosamente opt-in, errori sanitizzati che non espongono dettagli interni, audit trail locale nel tuo SQLite e codice completamente open source con licenza MIT."/>
+<img src="../../diagrams/privacy-local.svg" width="100%" alt="Privato e local-first — le tue chiavi, la tua macchina, i tuoi dati; OmniRoute non aggiunge un passaggio di elaborazione dei prompt ospitato da OmniRoute; la telemetria è disattivata per impostazione predefinita. Undici garanzie: il routing delle richieste viene eseguito sul tuo hardware, credenziali cifrate a riposo (AES-256-GCM), nessun servizio di account ospitato da OmniRoute; l'operatore controlla l'identità della dashboard tramite una password locale o OIDC opzionale, gateway rafforzato (scoping delle API key, filtro IP, rate limit, difesa dalla prompt injection), route di processo limitate al loopback, pulizia degli header upstream, redazione PII rigorosamente opt-in, errori sanitizzati che oscurano credenziali, stack trace e percorsi filesystem riconosciuti, audit trail locale nel tuo SQLite e codice proprio di OmniRoute con licenza MIT; i componenti di terze parti inclusi mantengono le rispettive licenze."/>
 
 <sub>📖 [Autorizzazione](../../architecture/AUTHZ_GUIDE.md) · [Guardrail](../../security/GUARDRAILS.md) · [Conformità](../../security/COMPLIANCE.md)</sub>
 

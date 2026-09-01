@@ -1,7 +1,27 @@
 import { tlsFetchChatGpt } from "../../services/chatgptTlsClient.ts";
+import { sanitizeErrorMessage } from "../../utils/error.ts";
 
 const CONVERSATION_RESUME_URL = "https://chatgpt.com/backend-api/f/conversation/resume";
 const RESUME_OFFSETS = [0, 1, 2] as const;
+const UPSTREAM_LOG_DETAIL_MAX_CHARS = 300;
+const UPSTREAM_LOG_URL_PATTERN = /(?:https?|wss?):\/\/[^\s"'<>]+/giu;
+
+function sanitizeUpstreamLogDetail(value: unknown): string {
+  let raw = value;
+  try {
+    if (value instanceof Error) raw = value.message;
+  } catch {
+    // A rejected Proxy may throw while instanceof walks its prototype chain.
+  }
+  const sanitized = sanitizeErrorMessage(raw).replace(UPSTREAM_LOG_URL_PATTERN, "<url>").trim();
+  return sanitized
+    ? sanitized.slice(0, UPSTREAM_LOG_DETAIL_MAX_CHARS)
+    : "upstream error unavailable";
+}
+
+function sanitizeOpaqueLogId(value: string | null | undefined): string {
+  return value?.trim() ? "<id>" : "unknown";
+}
 
 export interface FinalAssistantAnswer {
   text: string;
@@ -98,7 +118,9 @@ async function attemptResumeOffset({
     if (response.status >= 400) {
       log?.warn?.(
         "CGPT-WEB",
-        `conversation resume ${response.status}: ${(response.text || "").slice(0, 300)}`
+        `conversation resume ${response.status}: ${sanitizeUpstreamLogDetail(
+          (response.text || "").slice(0, 300)
+        )}`
       );
       return { answer: null, shouldRetry: false };
     }
@@ -109,10 +131,7 @@ async function attemptResumeOffset({
     const answer = await readFinalAssistantAnswer(eventStream, signal, readContent);
     return { answer, shouldRetry: !answer };
   } catch (error) {
-    log?.warn?.(
-      "CGPT-WEB",
-      `conversation resume failed: ${error instanceof Error ? error.message : String(error)}`
-    );
+    log?.warn?.("CGPT-WEB", `conversation resume failed: ${sanitizeUpstreamLogDetail(error)}`);
     return { answer: null, shouldRetry: false };
   }
 }
@@ -149,6 +168,9 @@ export async function resumeChatGptHandoff({
     if (!attempt.shouldRetry) return null;
   }
 
-  log?.warn?.("CGPT-WEB", `conversation resume returned no assistant text for ${conversationId}`);
+  log?.warn?.(
+    "CGPT-WEB",
+    `conversation resume returned no assistant text for ${sanitizeOpaqueLogId(conversationId)}`
+  );
   return null;
 }

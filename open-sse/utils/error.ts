@@ -1,15 +1,19 @@
 import { CORS_HEADERS } from "./cors.ts";
 import { unwrapClinepassEnvelope } from "./clinepassEnvelope.ts";
+import {
+  containsStrongCredentialToken,
+  redactSensitiveErrorText,
+  sanitizeErrorMessage,
+  sanitizeUpstreamDetails,
+} from "./errorSanitization.ts";
 import { getDefaultErrorMessage, getErrorInfo } from "../config/errorConfig.ts";
 import { normalizePayloadForLog } from "@/lib/logPayloads";
 import type { ModelCooldownErrorPayload } from "@/types";
 import { buildPassthroughErrorResponse } from "./upstreamErrorPassthrough.ts";
 
-/**
- * Sanitize an error message to prevent stack trace exposure in API responses.
- * Strips stack traces, file paths, and absolute Windows/POSIX paths from
- * error messages before they reach the client.
- */
+export { redactSensitiveErrorText, sanitizeErrorMessage, sanitizeUpstreamDetails };
+
+/** Client-visible error shape; dynamic fields are projected through canonical boundaries. */
 interface ErrorResponseBody {
   error: {
     message: string;
@@ -19,96 +23,120 @@ interface ErrorResponseBody {
   upstream_details?: Record<string, unknown> | null; // sanitized upstream provider body
 }
 
-// Length cap protects against pathological inputs even before tokenization.
-const MAX_ERROR_LEN = 4096;
-const SOURCE_EXT = ["ts", "tsx", "js", "jsx", "mjs", "cjs"] as const;
-
-function looksLikeAbsolutePath(tok: string): boolean {
-  // POSIX: "/<...>.ts" (optionally followed by :line[:col]).
-  // Windows: "C:\<...>.ts" or "C:/<...>.ts".
-  if (tok.length < 4 || tok.length > 2048) return false;
-  const isPosix = tok.charCodeAt(0) === 0x2f; // '/'
-  const isWindows = tok.length > 2 && tok.charCodeAt(1) === 0x3a && /[A-Za-z]/.test(tok[0]);
-  if (!isPosix && !isWindows) return false;
-  const dot = tok.lastIndexOf(".");
-  if (dot <= 0 || dot === tok.length - 1) return false;
-  const ext = tok
-    .slice(dot + 1)
-    .split(":", 1)[0]
-    .toLowerCase();
-  return (SOURCE_EXT as readonly string[]).includes(ext);
-}
-
-export function redactSensitiveErrorText(value: string): string {
-  return value
-    .replace(/data:[^,\s]+;base64,[A-Za-z0-9+/=_-]+/gi, "[REDACTED_DATA_URL]")
-    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "$1 [REDACTED]")
-    .replace(
-      /(["']?(?:api[_-]?key|access[_-]?token|authorization|cookie|secret)["']?\s*[:=]\s*["'])[^"']*(["'])/gi,
-      "$1[REDACTED]$2"
-    )
-    .replace(
-      /(["']?(?:api[_-]?key|access[_-]?token|authorization|cookie|secret)["']?\s*[:=]\s*)[^"',\s}]+/gi,
-      "$1[REDACTED]"
-    );
-}
-
-/**
- * Strip stack-trace tail and absolute source paths from error messages.
- *
- * Implemented via simple whitespace tokenization (linear time) instead of a
- * single complex regex, so CodeQL `js/polynomial-redos` stays clean even when
- * the runtime error message is attacker-controlled.
- */
-export function sanitizeErrorMessage(message: unknown): string {
-  let str = typeof message === "string" ? message : String(message ?? "");
-  if (str.length > MAX_ERROR_LEN) str = str.slice(0, MAX_ERROR_LEN);
-  const nl = str.indexOf("\n");
-  const firstLine = nl >= 0 ? str.slice(0, nl) : str;
-  // Preserve original whitespace by splitting on captured separator.
-  const parts = firstLine.split(/(\s+)/);
-  for (let i = 0; i < parts.length; i++) {
-    if (looksLikeAbsolutePath(parts[i])) parts[i] = "<path>";
-  }
-  return redactSensitiveErrorText(parts.join(""));
-}
-
-const BLOCKED_KEYS =
-  /stack|trace|path|file|cwd|dir|password|secret|token|key|authorization|cookie/i;
-const MAX_DEPTH = 4;
-
-/**
- * Recursively sanitize an arbitrary JSON value from an upstream provider body.
- * - Strings: run through sanitizeErrorMessage (strips stacks + absolute paths).
- * - Keys matching BLOCKED_KEYS are dropped (credential/path guards).
- * - Depth capped at MAX_DEPTH to prevent pathological nesting.
- * - Arrays capped at 32 elements.
- * - Returns null for null/undefined/non-JSON-serializable values.
- */
-export function sanitizeUpstreamDetails(value: unknown, depth = 0): unknown {
-  if (depth > MAX_DEPTH) return "[truncated]";
-  if (value === null || value === undefined) return null;
-  if (typeof value === "string") return sanitizeErrorMessage(value);
-  if (typeof value === "number" || typeof value === "boolean") return value;
-  if (Array.isArray(value)) {
-    return value.slice(0, 32).map((v) => sanitizeUpstreamDetails(v, depth + 1));
-  }
-  if (typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (BLOCKED_KEYS.test(k)) continue;
-      out[k] = sanitizeUpstreamDetails(v, depth + 1);
-    }
-    return out;
-  }
-  return null;
-}
-
 /** Optional caller classification; when set, wins over status-derived defaults. */
 export type ErrorBodyClassification = {
   type?: string;
   code?: string;
 };
+
+const PUBLIC_ERROR_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const SAFE_PUBLIC_CREDENTIAL_ERROR_IDENTIFIERS = new Set([
+  "acp_session_mismatch",
+  "access_token_missing",
+  "access_token_required",
+  "api_key_invalid",
+  "authorization_code",
+  "authorization_code_pkce",
+  "authorization_endpoint",
+  "authorization_failed",
+  "authorization_pending",
+  "bearer_error",
+  "bearer_expired",
+  "bearer_invalid",
+  "bearer_required",
+  "client_secret_missing",
+  "codex_credentials_unavailable",
+  "codex_access_token_missing",
+  "codex_oauth_token_missing",
+  "expired_token",
+  "cursor_session_stale",
+  "github_access_token_invalid",
+  "github_token_expired",
+  "invalid_api_key",
+  "invalid_password",
+  "invalid_token",
+  "invalid_token_response",
+  "lease_api_key_invalid",
+  "lease_authorization_mismatch",
+  "missing_access_token",
+  "missing_api_key",
+  "missing_authorization",
+  "missing_cookie",
+  "missing_id_token",
+  "missing_refresh_token",
+  "missing_credentials",
+  "missing_session_id",
+  "no_refresh_token",
+  "no_access_token",
+  "no_credentials",
+  "oauth_invalid_token",
+  "password_mismatch",
+  "password_required",
+  "provider_bearer_error",
+  "provider_token_expired",
+  "refresh_token_invalid",
+  "refresh_token_invalidated",
+  "refresh_token_reused",
+  "risk_session_stale",
+  "session_expired",
+  "session_pool_exhausted",
+  "token_expired",
+  "token_health_check",
+  "token_limit_exceeded",
+  "token_refresh_failed",
+  "token_refresh_transient",
+  "token_required",
+  "tls_session_capacity",
+  "token_type",
+  "token_usage",
+]);
+const SAFE_PUBLIC_CREDENTIAL_LEXICAL_IDENTIFIERS = new Set([
+  "passwordless",
+  "passwordless_auth_required",
+  "passwordless_error",
+  "tokenization_error",
+  "tokenizer_error",
+]);
+const PUBLIC_ERROR_CREDENTIAL_MARKERS = [
+  "accesstoken",
+  "refreshtoken",
+  "apikey",
+  "privatekey",
+  "sessionkey",
+  "encryptionkey",
+  "secretkey",
+  "signingkey",
+  "sessionid",
+  "cfclearance",
+  "credential",
+  "authorization",
+  "password",
+  "secret",
+  "bearer",
+  "cookie",
+  "token",
+  "session",
+  "ssorw",
+  "sso",
+] as const;
+
+function isSafePublicErrorIdentifier(value: string): boolean {
+  if (!PUBLIC_ERROR_IDENTIFIER.test(value)) return false;
+  const lowerValue = value.toLowerCase();
+  if (SAFE_PUBLIC_CREDENTIAL_ERROR_IDENTIFIERS.has(lowerValue)) return true;
+  if (SAFE_PUBLIC_CREDENTIAL_LEXICAL_IDENTIFIERS.has(lowerValue)) return true;
+  if (containsStrongCredentialToken(value)) return false;
+  const compactValue = lowerValue.replace(/[._-]+/g, "");
+  return !PUBLIC_ERROR_CREDENTIAL_MARKERS.some((marker) => compactValue.includes(marker));
+}
+
+/** Project an internal classification onto the bounded client-visible identifier vocabulary. */
+export function projectPublicErrorIdentifier(value: unknown, fallback: unknown): string {
+  const safeFallback =
+    typeof fallback === "string" && isSafePublicErrorIdentifier(fallback) ? fallback : "error";
+  if (typeof value !== "string") return safeFallback;
+  return isSafePublicErrorIdentifier(value) ? value : safeFallback;
+}
 
 /**
  * Build OpenAI-compatible error response body. Message is always sanitized
@@ -130,8 +158,8 @@ export function buildErrorBody(
   const body: ErrorResponseBody = {
     error: {
       message: safeMessage,
-      type: classification?.type ?? errorInfo.type,
-      code: classification?.code ?? errorInfo.code,
+      type: projectPublicErrorIdentifier(classification?.type, errorInfo.type),
+      code: projectPublicErrorIdentifier(classification?.code, errorInfo.code),
     },
   };
 
@@ -200,21 +228,21 @@ export interface ComboDiagnostics {
 }
 
 function clampDiagStr(v: unknown, max = 128): string {
-  return typeof v === "string" ? v.slice(0, max).replace(/[\r\n]+/g, " ") : "";
+  return typeof v === "string" ? sanitizeErrorMessage(v).slice(0, max) : "";
 }
 
 /**
- * HTTP header values must be Latin1/ByteString (undici throws a TypeError
- * otherwise — see #6612). Replace any codepoint outside the Latin1 range
- * (0-255) with "?" so header construction never throws. Only used for the
- * literal header value; the JSON body keeps the original, unsanitized
- * readable text via `sanitizeComboDiagnostics`.
+ * HTTP header values must exclude controls and remain ByteString-compatible
+ * (undici throws a TypeError otherwise — see #6612). Replace every codepoint
+ * outside printable ASCII (0x20-0x7e) with "?" so construction never throws. Only used for the
+ * literal header value; the JSON body keeps the sanitized readable text via
+ * `sanitizeComboDiagnostics`.
  */
 function toHeaderSafeAscii(v: string): string {
   let out = "";
   for (let i = 0; i < v.length; i++) {
     const code = v.charCodeAt(i);
-    out += code > 255 ? "?" : v[i];
+    out += code < 0x20 || code > 0x7e ? "?" : v[i];
   }
   return out;
 }
@@ -290,12 +318,10 @@ export function errorResponseWithComboDiagnostics(
   opts: { code?: string; type?: string } = {}
 ): Response {
   const safe = sanitizeComboDiagnostics(diagnostics);
-  const body = buildErrorBody(statusCode, message) as ErrorResponseBody & {
+  const body = buildErrorBody(statusCode, message, undefined, opts) as ErrorResponseBody & {
     diagnostics?: ComboDiagnostics;
     recovery_hint?: ComboRecoveryHint;
   };
-  if (opts.code) body.error.code = opts.code;
-  if (opts.type) body.error.type = opts.type;
   body.diagnostics = safe;
   if (safe.recovery) body.recovery_hint = safe.recovery;
   const excludedHeader = toHeaderSafeAscii(
@@ -385,6 +411,29 @@ function normalizeRetryAfterSeconds(retryAfter?: string | number | Date | null):
   }
 
   return 1;
+}
+
+const MAX_PUBLIC_CONTEXT_LABEL_LENGTH = 256;
+
+function projectPublicContextLabel(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const label = value.trim();
+  if (
+    label.length === 0 ||
+    label.length > MAX_PUBLIC_CONTEXT_LABEL_LENGTH ||
+    /[\u0000-\u001f\u007f]/.test(label)
+  ) {
+    return null;
+  }
+  return sanitizeErrorMessage(label) === label ? label : null;
+}
+
+function projectPublicRetryTimestamp(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const timestamp = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(timestamp)) return null;
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === timestamp ? timestamp : null;
 }
 
 /**
@@ -533,13 +582,10 @@ export function createErrorResult(
   upstreamDetails?: unknown,
   opts?: { passthrough?: boolean }
 ) {
-  const body = buildErrorBody(statusCode, message, upstreamDetails);
-  if (errorCode) {
-    body.error.code = errorCode;
-  }
-  if (errorType) {
-    body.error.type = errorType;
-  }
+  const body = buildErrorBody(statusCode, message, upstreamDetails, {
+    code: errorCode,
+    type: errorType,
+  });
 
   const result: {
     success: false;
@@ -579,8 +625,9 @@ export function createErrorResult(
     result.retryAfterMs = retryAfterMs;
   }
 
-  // Opt-in relay of the verbatim upstream error body (Claude Code auto-recover
-  // contract — see upstreamErrorPassthrough.ts). Only swaps `result.response`;
+  // Opt-in relay of the upstream wording/shape needed by Claude Code auto-recovery,
+  // after canonical recursive sanitization (see upstreamErrorPassthrough.ts).
+  // Only swaps `result.response`;
   // `result.error`/`rawMessage`/`errorType`/`errorCode` stay untouched so
   // server-side classification (checkFallbackError, combo retry logic, etc.)
   // never sees a different value depending on this flag.
@@ -613,7 +660,9 @@ export function unavailableResponse(
   retryAfterHuman?: string
 ) {
   const retryAfterSec = normalizeRetryAfterSeconds(retryAfter);
-  const msg = retryAfterHuman ? `${message} (${retryAfterHuman})` : message;
+  const safeMessage = sanitizeErrorMessage(message) || getDefaultErrorMessage(statusCode);
+  const safeRetryAfterHuman = retryAfterHuman ? sanitizeErrorMessage(retryAfterHuman) : "";
+  const msg = safeRetryAfterHuman ? `${safeMessage} (${safeRetryAfterHuman})` : safeMessage;
   return new Response(JSON.stringify({ error: { message: msg } }), {
     status: statusCode,
     headers: {
@@ -628,13 +677,14 @@ export function providerCircuitOpenResponse(
   retryAfter?: string | number | Date | null
 ) {
   const retryAfterSec = normalizeRetryAfterSeconds(retryAfter);
+  const safeProvider = projectPublicContextLabel(provider) ?? "unknown";
   return new Response(
     JSON.stringify({
       error: {
-        message: `Provider ${provider} circuit breaker is open`,
+        message: `Provider ${safeProvider} circuit breaker is open`,
         type: "server_error",
         code: "provider_circuit_open",
-        provider,
+        provider: safeProvider,
         retry_after: retryAfterSec,
       },
     }),
@@ -660,9 +710,10 @@ export function buildModelCooldownBody({
   retryAfterAt?: string | null;
   credentialsCoolingCount?: number | null;
 }): ModelCooldownErrorPayload {
-  const resolvedModel = typeof model === "string" && model.trim().length > 0 ? model.trim() : null;
-  const resolvedRetryAfterAt =
-    typeof retryAfterAt === "string" && retryAfterAt.length > 0 ? retryAfterAt : null;
+  const resolvedModel = projectPublicContextLabel(model);
+  const resolvedRetryAfterAt = projectPublicRetryTimestamp(retryAfterAt);
+  const resolvedResetSeconds =
+    Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? Math.max(Math.ceil(retryAfterSec), 1) : 1;
   const resolvedCoolingCount =
     typeof credentialsCoolingCount === "number" &&
     Number.isFinite(credentialsCoolingCount) &&
@@ -678,7 +729,7 @@ export function buildModelCooldownBody({
       type: "rate_limit_error",
       code: "model_cooldown",
       ...(resolvedModel ? { model: resolvedModel } : {}),
-      reset_seconds: Math.max(Math.ceil(retryAfterSec), 1),
+      reset_seconds: resolvedResetSeconds,
       ...(resolvedRetryAfterAt ? { retry_after: resolvedRetryAfterAt } : {}),
       ...(resolvedCoolingCount ? { credentials_cooling: resolvedCoolingCount } : {}),
     },

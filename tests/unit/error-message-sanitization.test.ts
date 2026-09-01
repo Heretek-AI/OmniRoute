@@ -223,6 +223,545 @@ test("sanitizeErrorMessage replaces absolute paths with <path>", async () => {
   const out2 = sanitizeErrorMessage("Module not found: C:\\Users\\admin\\app\\index.js:1:1");
   assert.ok(!out2.includes("C:\\Users\\admin"));
   assert.ok(out2.includes("<path>"));
+
+  const out3 = sanitizeErrorMessage("Native binary missing at /srv/private/tls-client");
+  assert.ok(!out3.includes("/srv/private/tls-client"));
+  assert.ok(out3.includes("<path>"));
+});
+
+test("sanitizeErrorMessage redacts wrapped filesystem paths without stripping punctuation", async () => {
+  const { sanitizeErrorMessage } = await import("../../open-sse/utils/error.ts");
+  const cases = [
+    {
+      input: "Cannot load '/home/alice/omniroute/index.js:12:7'.",
+      expected: "Cannot load '<path>'.",
+    },
+    {
+      input: 'Cannot load "C:\\Users\\alice\\omniroute\\index.js:12:7",',
+      expected: 'Cannot load "<path>",',
+    },
+    {
+      input: "Loader failed (/opt/omniroute/native/tls-client.node:42:9).",
+      expected: "Loader failed (<path>).",
+    },
+    {
+      input: "Loader failed (C:\\Users\\alice\\omniroute\\tls-client.node:42:9);",
+      expected: "Loader failed (<path>);",
+    },
+    {
+      input: "Import failed for file:///home/alice/omniroute/index.mjs:8:3;",
+      expected: "Import failed for <path>;",
+    },
+    {
+      input: "Import failed for file:///C:/Users/alice/omniroute/index.cjs:8:3!",
+      expected: "Import failed for <path>!",
+    },
+    {
+      input: "Cannot import file://server/share/private/secret.js",
+      expected: "Cannot import <path>",
+    },
+    {
+      input: "Cannot import 'file://localhost/home/alice/private/secret.js'",
+      expected: "Cannot import '<path>'",
+    },
+    {
+      input: "Cannot load //server/share/My Project/private/secret.js",
+      expected: "Cannot load <path>",
+    },
+    {
+      input: "dlopen failed at /Users/alice/private/native.dylib:12:4",
+      expected: "dlopen failed at <path>",
+    },
+    {
+      input: "open '/Users/alice/private/native.dylib'",
+      expected: "open '<path>'",
+    },
+    {
+      input: "dlopen failed at /nix/store/abc/private/native.so",
+      expected: "dlopen failed at <path>",
+    },
+    {
+      input: "open '/nix/store/abc/private/native.so'",
+      expected: "open '<path>'",
+    },
+    {
+      input: "dlopen failed at /custom/private/native.dll",
+      expected: "dlopen failed at <path>",
+    },
+    {
+      input: "Failed at /proc/self/fd/17",
+      expected: "Failed at <path>",
+    },
+    {
+      input: "Failed at /dev/shm/private-token",
+      expected: "Failed at <path>",
+    },
+    {
+      input: "Failed at /sys/kernel/private /boot/private /media/alice/private",
+      expected: "Failed at <path> <path> <path>",
+    },
+    {
+      input: "open '/custom/private/no-extension'",
+      expected: "open '<path>'",
+    },
+    {
+      input: "Couldn't open '/home/alice/My Project/tls-client/bin/native.so'",
+      expected: "Couldn't open '<path>'",
+    },
+    {
+      input: "dlopen failed at /home/alice/My Project/native.so: denied",
+      expected: "dlopen failed at <path>: denied",
+    },
+    {
+      input: "dlopen failed at /custom/alice/My Project/native.so: denied",
+      expected: "dlopen failed at <path>: denied",
+    },
+    {
+      input: "dlopen failed at /home/alice/My Project/native.so. Retry",
+      expected: "dlopen failed at <path>. Retry",
+    },
+    {
+      input: "Cannot read /home/alice/My Project/config.json: denied",
+      expected: "Cannot read <path>: denied",
+    },
+    {
+      input: "Cannot read /custom/alice/My Project/secret.pem: denied",
+      expected: "Cannot read <path>: denied",
+    },
+    {
+      input: "Cannot import file:///home/alice/My Project/native.so: denied",
+      expected: "Cannot import <path>: denied",
+    },
+    {
+      input: 'EACCES: open "C:\\Users\\Alice Smith\\tls-client\\bin\\native.dll": denied',
+      expected: 'EACCES: open "<path>": denied',
+    },
+    {
+      input: "dlopen failed at \\\\server\\share\\secret\\native.dll",
+      expected: "dlopen failed at <path>",
+    },
+    {
+      input: 'dlopen failed at "\\\\server\\share\\secret folder\\native.dll"',
+      expected: 'dlopen failed at "<path>"',
+    },
+    {
+      input: "dlopen failed at \\\\?\\C:\\secret\\native.dll",
+      expected: "dlopen failed at <path>",
+    },
+    {
+      input: "dlopen failed at C:\\Users\\John Smith\\private\\native.dll",
+      expected: "dlopen failed at <path>",
+    },
+    {
+      input: "Route ('C:\\Users\\alice\\private\\native.dll') failed",
+      expected: "Route ('<path>') failed",
+    },
+    {
+      input: "Cannot open '/v1/private/secret'",
+      expected: "Cannot open '<path>'",
+    },
+    {
+      input: "Cannot open '/v1/private/secret.js'",
+      expected: "Cannot open '<path>'",
+    },
+    {
+      input: "Cannot open /home/alice/My Project/archive.tar.gz: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot open file:///home/alice/My Project/file.js.map: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot open /home/alice/My Project/archive.tar.gz/child: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot open /archive.tar.gz/secret",
+      expected: "Cannot open <path>",
+    },
+    {
+      input: "Cannot open file:///home/alice/My Project/archive.tar.gz/child: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot open C:\\Users\\alice\\My Project\\archive.tar.gz\\child: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot get '/home/alice/private/secret.pem'",
+      expected: "Cannot get '<path>'",
+    },
+    {
+      input: "Please delete '/Users/alice/private/token.txt'",
+      expected: "Please delete '<path>'",
+    },
+    {
+      input: "GET '/home/alice/private/secret.pem'",
+      expected: "GET '<path>'",
+    },
+    {
+      input: "Route: /Users/alice/private/token.txt",
+      expected: "Route: <path>",
+    },
+    {
+      input: "Cannot route '/custom/alice/private/secret.pem'",
+      expected: "Cannot route '<path>'",
+    },
+    {
+      input: "Cannot load '/home/alice/O'Connor/private/secret.js'",
+      expected: "Cannot load '<path>'",
+    },
+    {
+      input: "Cannot load '/home/alice/John' Doe/private/secret.js'",
+      expected: "Cannot load '<path>'",
+    },
+    {
+      input: "Cannot load '/home/alice/O'.config/private/secret.js'",
+      expected: "Cannot load '<path>'",
+    },
+    {
+      input: "Route ('/app/status') failed at '/home/alice/private/secret.pem'",
+      expected: "Route ('/app/status') failed at '<path>'",
+    },
+    {
+      input: "Cannot load /home/alice/My.Project Files/native.so",
+      expected: "Cannot load <path>",
+    },
+    {
+      input: "Cannot load file:///home/alice/My.Project Files/native.so",
+      expected: "Cannot load <path>",
+    },
+    {
+      input: "Cannot load file://server/share/My.Project Files/native.so",
+      expected: "Cannot load <path>",
+    },
+    {
+      input: "Cannot load C:\\Users\\alice\\My.Project Files\\native.dll",
+      expected: "Cannot load <path>",
+    },
+    {
+      input: "Cannot load \\\\server\\share\\My.Project Files\\native.dll",
+      expected: "Cannot load <path>",
+    },
+    {
+      input: "Cannot load \\\\?\\C:\\My.Project Files\\native.dll",
+      expected: "Cannot load <path>",
+    },
+    {
+      input: "Cannot load C:\\My, Project\\native.dll",
+      expected: "Cannot load <path>",
+    },
+    {
+      input: "Cannot load file:///home/My, Project/native.so",
+      expected: "Cannot load <path>",
+    },
+    {
+      input: "Cannot open /v1/private/My very secret.js: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot open /v1/private/My very secret.js because permission failed",
+      expected: "Cannot open <path> because permission failed",
+    },
+    {
+      input: "Cannot open /custom/file.js because https://api.example.com/v1 failed",
+      expected: "Cannot open <path> because https://api.example.com/v1 failed",
+    },
+    {
+      input: "Cannot open /home/alice/file.js because https://api.example.com/v1 failed",
+      expected: "Cannot open <path> because https://api.example.com/v1 failed",
+    },
+    {
+      input: "Cannot open C:\\Users\\alice\\file.js because https://api.example.com/v1 failed",
+      expected: "Cannot open <path> because https://api.example.com/v1 failed",
+    },
+    {
+      input: "Cannot open file:///home/alice/file.js because https://api.example.com/v1 failed",
+      expected: "Cannot open <path> because https://api.example.com/v1 failed",
+    },
+    {
+      input: "Cannot open /custom/file.js because Route /v1/config.js failed",
+      expected: "Cannot open <path> because Route /v1/config.js failed",
+    },
+    {
+      input: "Cannot open /home/alice/file.js because Route ('/v1/config.js') failed",
+      expected: "Cannot open <path> because Route ('/v1/config.js') failed",
+    },
+    {
+      input: "Cannot open /home/alice/file.js because Route('/v1/config.js') failed",
+      expected: "Cannot open <path> because Route('/v1/config.js') failed",
+    },
+    {
+      input: "Cannot open C:\\Users\\alice\\file.js because GET /v1/config.js failed",
+      expected: "Cannot open <path> because GET /v1/config.js failed",
+    },
+    {
+      input: "Cannot open file:///home/alice/file.js because TRACE ('/v1/config.js') failed",
+      expected: "Cannot open <path> because TRACE ('/v1/config.js') failed",
+    },
+    {
+      input: "Cannot open /home/alice/My Project.js Files/private: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot open /custom/My Project.js Files/private: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot open file:///home/alice/My Project.js Files/private: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot open C:\\Users\\alice\\My Project.dll Files\\private: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot open /home/alice/My archive.tar.gz Child/private: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot open /home/alice/My Project.js Secret Files/private: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot open file:///home/alice/My Project.js Secret Files/private: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot open C:\\Users\\alice\\My Project.dll Secret Files\\private: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot open /home/alice/My Folder/Another Deep secret.pem: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot open file:///home/alice/My Folder/Another Deep secret.pem: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot open C:\\Users\\alice\\My Folder\\Another Deep secret.pem: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot open /home/alice/My Folder/Another because Secret/private: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot open file:///home/alice/My Folder/Another because Secret/private: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot open C:\\Users\\alice\\My Folder\\Another because Secret\\private: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Cannot open \\\\server\\share\\My Folder\\Another because Secret\\private: denied",
+      expected: "Cannot open <path>: denied",
+    },
+    {
+      input: "Route ('//server/share/private/secret.pem') failed",
+      expected: "Route ('<path>') failed",
+    },
+    {
+      input: "GET '//server/share/private/secret.pem' failed",
+      expected: "GET '<path>' failed",
+    },
+    {
+      input: "Route ('//?/C:/private/secret.pem') failed",
+      expected: "Route ('<path>') failed",
+    },
+    {
+      input: "Failure path:/home/alice/private/secret.ts",
+      expected: "Failure path:<path>",
+    },
+    {
+      input: "Failure path:/Users/alice/My Project/secret.js",
+      expected: "Failure path:<path>",
+    },
+    {
+      input: "Failure path=>/home/alice/private/secret.pem",
+      expected: "Failure path=><path>",
+    },
+    {
+      input: "Failure path->/home/alice/private/secret.pem",
+      expected: "Failure path-><path>",
+    },
+    {
+      input: "Failure path|/home/alice/private/secret.pem",
+      expected: "Failure path|<path>",
+    },
+    {
+      input: "Failure path=>C:\\Users\\alice\\private\\secret.pem",
+      expected: "Failure path=><path>",
+    },
+    {
+      input: "Failure path=>file:///home/alice/private/secret.pem",
+      expected: "Failure path=><path>",
+    },
+    {
+      input: "Failure://server/share/LeakBoundary.pem tail",
+      expected: "Failure:<path>",
+    },
+    {
+      input: "Error,/home/alice/private/a.ts",
+      expected: "Error,<path>",
+    },
+    {
+      input: "Error;/home/alice/private/a.ts",
+      expected: "Error;<path>",
+    },
+    {
+      input: "Error./home/alice/private/a.ts",
+      expected: "Error.<path>",
+    },
+    {
+      input: "Error,C:\\Users\\alice\\secret.js",
+      expected: "Error,<path>",
+    },
+    {
+      input: "Error;file:///home/alice/secret.js",
+      expected: "Error;<path>",
+    },
+    {
+      input: "Error /home,denied",
+      expected: "Error <path>",
+    },
+    {
+      input: "Error /home:denied",
+      expected: "Error <path>",
+    },
+    {
+      input: "Cannot read /secret.pem",
+      expected: "Cannot read <path>",
+    },
+    {
+      input: "Cannot read /config.json",
+      expected: "Cannot read <path>",
+    },
+    {
+      input: "Cannot open /home/alice/My Project",
+      expected: "Cannot open <path>",
+    },
+    {
+      input: "Cannot open /home/alice/My project",
+      expected: "Cannot open <path>",
+    },
+    {
+      input: "Cannot open file:///home/alice/My Project",
+      expected: "Cannot open <path>",
+    },
+    {
+      input: "Cannot open file://server/share/My Project",
+      expected: "Cannot open <path>",
+    },
+    {
+      input: "Cannot open '/home/alice/a.pem' then '/home/bob/b.pem' failed",
+      expected: "Cannot open '<path>' then '<path>' failed",
+    },
+    {
+      input: "Cannot open '/home/alice/a.pem' because token 'abc' expired",
+      expected: "Cannot open '<path>' expired",
+    },
+    {
+      input: "Cannot open /v1/private/My secret.js: denied",
+      expected: "Cannot open <path>: denied",
+    },
+  ];
+
+  for (const { input, expected } of cases) {
+    assert.equal(sanitizeErrorMessage(input), expected, input);
+  }
+
+  for (const boundary of [
+    "after",
+    "because",
+    "before",
+    "but",
+    "crashed",
+    "denied",
+    "eacces",
+    "enoent",
+    "expired",
+    "failed",
+    "rejected",
+    "retry",
+    "then",
+    "when",
+    "while",
+  ]) {
+    const input = "/home/alice/My Folder/Another " + boundary + " Secret/private: denied";
+    assert.equal(sanitizeErrorMessage(input), "<path>: denied", input);
+  }
+});
+
+test("sanitizeErrorMessage preserves HTTPS URLs and ordinary slash text", async () => {
+  const { sanitizeErrorMessage } = await import("../../open-sse/utils/error.ts");
+  const cases = [
+    "Request to https://api.example.com/path failed",
+    "Request url=>https://api.example.com/path failed",
+    "Route /v1/chat/completions rejected input/output text",
+    "Route ('/v1/chat/completions') rejected input/output text",
+    "Route('/v1/chat/completions') rejected input/output text",
+    "Route ('/health') rejected input/output text",
+    "Route ('/api/models') rejected input/output text",
+    "Route ('/v1/chat/completions') reported native.node",
+    "Route ('/health') reported native.so",
+    "Route ('/api/models') reported native.dll",
+    "Route ('/app/status') rejected input/output text",
+    "Route('/app/status') rejected input/output text",
+    "Route ('/v1/config.js') rejected input/output text",
+    "GET /app/status",
+    "Message /health, try again",
+    "Endpoint /v1/chat/completions, rejected",
+    "Request /foo and then input/output text",
+    "Route: ('/app/config.js')",
+    "Route: /app/config.js",
+    "GET: ('/app/config.js')",
+    "GET: /app/config.js",
+    "TRACE ('/v1/config.js') failed",
+    "TRACE /v1/config.js failed",
+    "CONNECT ('/app/status') failed",
+    "CONNECT /app/status failed",
+    "Endpoint /v1/chat/completions rejected input/output text",
+    "Message /api/models rejected input/output text",
+  ];
+
+  for (const input of cases) {
+    assert.equal(sanitizeErrorMessage(input), input);
+  }
+});
+
+test("sanitizeErrorMessage stops path spans before unrelated slash prose", async () => {
+  const { sanitizeErrorMessage } = await import("../../open-sse/utils/error.ts");
+  const cases = [
+    {
+      input: "Failed at /home/alice because input/output validation failed",
+      expected: "Failed at <path>",
+    },
+    {
+      input: "Failed at /proc/self/fd/17 then input/output validation failed",
+      expected: "Failed at <path>",
+    },
+  ];
+
+  for (const { input, expected } of cases) {
+    assert.equal(sanitizeErrorMessage(input), expected, input);
+  }
+});
+
+test("sanitizeErrorMessage preserves context after ambiguous unquoted paths", async () => {
+  const { sanitizeErrorMessage } = await import("../../open-sse/utils/error.ts");
+  const determinable = sanitizeErrorMessage(
+    "Failed at C:\\Program Files\\tls-client because loader.js crashed"
+  );
+  const ambiguous = sanitizeErrorMessage(
+    "Failed at C:\\Program Files because native loader failed"
+  );
+
+  assert.equal(determinable, "Failed at <path> because loader.js crashed");
+  assert.equal(ambiguous, "Failed at <path>");
 });
 
 test("sanitizeErrorMessage handles non-string inputs safely", async () => {

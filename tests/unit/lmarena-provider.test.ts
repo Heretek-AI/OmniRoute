@@ -20,8 +20,14 @@ import {
   parseLMArenaInitialModels,
   pickLMArenaModelId,
 } from "../../open-sse/executors/lmarena.ts";
-import { clearLMArenaDeadCatalogModels } from "../../open-sse/executors/lmarena/models.ts";
-import { __setTlsFetchOverrideForTesting } from "../../open-sse/services/lmarenaTlsClient.ts";
+import {
+  clearLMArenaDeadCatalogModels,
+  resolveLMArenaModelId,
+} from "../../open-sse/executors/lmarena/models.ts";
+import {
+  __setTlsFetchOverrideForTesting,
+  TlsClientUnavailableError,
+} from "../../open-sse/services/lmarenaTlsClient.ts";
 
 const TEST_ARENA_MODEL_ID = "019e080d-c29d-7d9a-aa54-faed41da0763";
 const UUID_V7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -30,7 +36,11 @@ const UUID_V7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 type LMArenaExecutorTestAccess = {
   provider: string;
   buildUrl: (model: string, credentials: unknown) => string;
-  buildRequestHeaders: (model: string, credentials: unknown, body: unknown) => Record<string, string>;
+  buildRequestHeaders: (
+    model: string,
+    credentials: unknown,
+    body: unknown
+  ) => Record<string, string>;
   transformRequest: (
     body: unknown,
     model: string,
@@ -159,7 +169,11 @@ describe("LMArena Executor", () => {
     assert.equal(headers.Cookie, "session=def");
 
     // providerSpecificData.cookie
-    headers = ex.buildRequestHeaders("gpt-4", { providerSpecificData: { cookie: "session=ghi" } }, {});
+    headers = ex.buildRequestHeaders(
+      "gpt-4",
+      { providerSpecificData: { cookie: "session=ghi" } },
+      {}
+    );
     assert.equal(headers.Cookie, "session=ghi");
 
     // Priority: direct > apiKey > providerSpecificData
@@ -474,6 +488,44 @@ describe("LMArena Executor", () => {
     assert.equal(pickLMArenaModelId(TEST_ARENA_MODEL_ID, []), TEST_ARENA_MODEL_ID);
   });
 
+  it("sanitizes static catalog lookup failures before warning", async () => {
+    const warnings: string[] = [];
+    const resolved = await resolveLMArenaModelId("unknown-model-for-log-test", {
+      debug: () => {
+        throw new Error(
+          "Catalog lookup failed at /srv/private/lmarena-catalog.ts:17:5; " +
+            "access_token=lmarena-catalog-secret\n" +
+            "    at SecretCatalogFrame (/srv/private/lmarena-catalog-stack.ts:2:3)"
+        );
+      },
+      warn: (_scope, message) => warnings.push(String(message)),
+    });
+
+    assert.equal(resolved, "unknown-model-for-log-test");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /Using raw model id after static catalog lookup failed/);
+    assert.match(warnings[0], /Catalog lookup failed/);
+    assert.doesNotMatch(warnings[0], /\/srv\/private\/lmarena-catalog(?:-stack)?\.ts/);
+    assert.doesNotMatch(warnings[0], /lmarena-catalog-secret|SecretCatalogFrame/);
+  });
+
+  it("uses a stable fallback when the catalog failure sanitizes to blank", async () => {
+    const warnings: string[] = [];
+    const resolved = await resolveLMArenaModelId("unknown-model-for-blank-log-test", {
+      debug: () => {
+        throw new Error(
+          "\n    at SecretOnlyFrame (/srv/private/lmarena-catalog-stack-only.ts:2:3)"
+        );
+      },
+      warn: (_scope, message) => warnings.push(String(message)),
+    });
+
+    assert.equal(resolved, "unknown-model-for-blank-log-test");
+    assert.deepEqual(warnings, [
+      "Using raw model id after static catalog lookup failed: Arena catalog lookup error",
+    ]);
+  });
+
   it("resolves catalog public names via static Direct-chat allowlist (no arena.ai fetch)", async () => {
     const executor = new LMArenaExecutor();
     let arenaHomeFetches = 0;
@@ -590,6 +642,237 @@ describe("LMArena Executor", () => {
       assert.equal(result.response.status, 429, "Should return 429 for rate limit");
       const errorBody = await result.response.json();
       assert.ok(errorBody.error, "Should have error object");
+    } finally {
+      __setTlsFetchOverrideForTesting(null);
+    }
+  });
+
+  it("sanitizes network failure details before logging or responding", async () => {
+    const errorLogs: string[] = [];
+    __setTlsFetchOverrideForTesting(async () => {
+      throw new Error(
+        "Arena request failed at /srv/private/lmarena-request.ts:17:5; " +
+          "access_token=lmarena-network-secret\n" +
+          "    at SecretArenaFrame (/srv/private/lmarena-stack.ts:2:3)"
+      );
+    });
+
+    try {
+      const result = await new LMArenaExecutor().execute({
+        model: TEST_ARENA_MODEL_ID,
+        body: { messages: [{ role: "user", content: "Hello" }] },
+        credentials: { cookie: "session=test" },
+        signal: new AbortController().signal,
+        log: { error: (_scope, message) => errorLogs.push(String(message)) },
+      });
+
+      assert.equal(result.response.status, 502);
+      assert.equal(errorLogs.length, 1);
+      const responseText = await result.response.text();
+      const json = JSON.parse(responseText);
+      assert.equal(json.error?.type, "network_error");
+      assert.equal(json.error?.code, "request_failed");
+      const publicOutput = `${errorLogs.join("\n")}\n${responseText}`;
+      assert.match(publicOutput, /Arena request failed/);
+      assert.doesNotMatch(publicOutput, /\/srv\/private\/lmarena-(?:request|stack)\.ts/);
+      assert.doesNotMatch(publicOutput, /lmarena-network-secret|SecretArenaFrame/);
+      assert.doesNotMatch(responseText, /"(?:stack|cause)"\s*:/i);
+    } finally {
+      __setTlsFetchOverrideForTesting(null);
+    }
+  });
+
+  it("fails closed when a network rejection refuses string coercion", async () => {
+    const errorLogs: string[] = [];
+    __setTlsFetchOverrideForTesting(async () => {
+      throw {
+        toString() {
+          throw new Error("access_token=hostile-secret at /srv/private/lmarena.ts:1:2");
+        },
+      };
+    });
+
+    try {
+      const result = await new LMArenaExecutor().execute({
+        model: TEST_ARENA_MODEL_ID,
+        body: { messages: [{ role: "user", content: "Hello" }] },
+        credentials: { cookie: "session=test" },
+        signal: new AbortController().signal,
+        log: { error: (_scope, message) => errorLogs.push(String(message)) },
+      });
+
+      assert.equal(result.response.status, 502);
+      assert.deepEqual(errorLogs, ["Request failed: Arena upstream error"]);
+      const json = await result.response.json();
+      assert.deepEqual(json.error, {
+        message: "Arena upstream error",
+        type: "network_error",
+        code: "request_failed",
+      });
+    } finally {
+      __setTlsFetchOverrideForTesting(null);
+    }
+  });
+
+  it("fails closed when network rejection prototype inspection throws", async () => {
+    const hostileFailure = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw new Error("access_token=prototype-secret at /srv/private/prototype.ts:1:2");
+        },
+        get(_target, property) {
+          if (property === "toString") {
+            return () => {
+              throw new Error("access_token=coercion-secret at /srv/private/coercion.ts:1:2");
+            };
+          }
+          return undefined;
+        },
+      }
+    );
+    const errorLogs: string[] = [];
+    __setTlsFetchOverrideForTesting(async () => {
+      throw hostileFailure;
+    });
+
+    try {
+      const result = await new LMArenaExecutor().execute({
+        model: TEST_ARENA_MODEL_ID,
+        body: { messages: [{ role: "user", content: "Hello" }] },
+        credentials: { cookie: "session=test" },
+        signal: new AbortController().signal,
+        log: { error: (_scope, message) => errorLogs.push(String(message)) },
+      });
+
+      assert.equal(result.response.status, 502);
+      assert.deepEqual(errorLogs, ["Request failed: Arena upstream error"]);
+      const responseText = await result.response.text();
+      assert.doesNotMatch(responseText, /prototype-secret|coercion-secret|\/srv\/private/);
+    } finally {
+      __setTlsFetchOverrideForTesting(null);
+    }
+  });
+
+  it("uses a stable fallback for blank TLS-unavailable errors", async () => {
+    const errorLogs: string[] = [];
+    __setTlsFetchOverrideForTesting(async () => {
+      throw new TlsClientUnavailableError(
+        "\n    at SecretOnlyFrame (/srv/private/lmarena-tls-stack-only.ts:2:3)"
+      );
+    });
+
+    try {
+      const result = await new LMArenaExecutor().execute({
+        model: TEST_ARENA_MODEL_ID,
+        body: { messages: [{ role: "user", content: "Hello" }] },
+        credentials: { cookie: "session=test" },
+        signal: new AbortController().signal,
+        log: { error: (_scope, message) => errorLogs.push(String(message)) },
+      });
+
+      assert.equal(result.response.status, 502);
+      assert.deepEqual(errorLogs, ["TLS client unavailable: Arena upstream error"]);
+      const responseText = await result.response.text();
+      const json = JSON.parse(responseText);
+      assert.equal(json.error?.type, "upstream_error");
+      assert.equal(json.error?.code, "TLS_CLIENT_UNAVAILABLE");
+      assert.equal(
+        json.error?.message,
+        "Arena TLS impersonation unavailable: Arena upstream error. Install/repair tls-client-node native binary."
+      );
+      assert.doesNotMatch(responseText, /SecretOnlyFrame|lmarena-tls-stack-only/);
+    } finally {
+      __setTlsFetchOverrideForTesting(null);
+    }
+  });
+
+  it("uses a stable public fallback for blank network and upstream event errors", async (t) => {
+    const stackOnly = "\n    at SecretOnlyFrame (/srv/private/lmarena-stack-only.ts:2:3)";
+    const cases = [
+      {
+        name: "network rejection",
+        setup: () =>
+          __setTlsFetchOverrideForTesting(async () => {
+            throw stackOnly;
+          }),
+        expectedType: "network_error",
+        expectedCode: "request_failed",
+      },
+      {
+        name: "non-streaming upstream event",
+        setup: () =>
+          __setTlsFetchOverrideForTesting(async () => ({
+            status: 200,
+            headers: new Headers({ "Content-Type": "text/event-stream" }),
+            text: `3:${JSON.stringify(stackOnly)}\n`,
+            body: null,
+          })),
+        expectedType: "api_error",
+        expectedCode: "lmarena_error",
+      },
+    ];
+
+    for (const testCase of cases) {
+      await t.test(testCase.name, async () => {
+        testCase.setup();
+        try {
+          const result = await new LMArenaExecutor().execute({
+            model: TEST_ARENA_MODEL_ID,
+            body: { messages: [{ role: "user", content: "Hello" }] },
+            credentials: { cookie: "session=test" },
+            signal: new AbortController().signal,
+            log: null,
+          });
+
+          assert.equal(result.response.status, 502);
+          const responseText = await result.response.text();
+          const json = JSON.parse(responseText);
+          assert.equal(json.error?.message, "Arena upstream error");
+          assert.equal(json.error?.type, testCase.expectedType);
+          assert.equal(json.error?.code, testCase.expectedCode);
+          assert.doesNotMatch(responseText, /SecretOnlyFrame|lmarena-stack-only/);
+        } finally {
+          __setTlsFetchOverrideForTesting(null);
+        }
+      });
+    }
+  });
+
+  it("uses a stable public fallback for blank streaming event errors", async () => {
+    const stackOnly = "\n    at SecretOnlyFrame (/srv/private/lmarena-stream-stack-only.ts:2:3)";
+    const encoded = new TextEncoder().encode(`data: 3:${JSON.stringify(stackOnly)}\n\n`);
+    __setTlsFetchOverrideForTesting(async () => ({
+      status: 200,
+      headers: new Headers({ "Content-Type": "text/event-stream" }),
+      text: null,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoded);
+          controller.close();
+        },
+      }),
+    }));
+
+    try {
+      const result = await new LMArenaExecutor().execute({
+        model: TEST_ARENA_MODEL_ID,
+        body: { messages: [{ role: "user", content: "Hello" }], stream: true },
+        stream: true,
+        credentials: { cookie: "session=test" },
+        signal: new AbortController().signal,
+        log: null,
+      });
+
+      assert.equal(result.response.status, 200);
+      const responseText = await result.response.text();
+      const payload = responseText
+        .split("\n")
+        .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+        .map((line) => JSON.parse(line.slice(6)))
+        .find((chunk) => chunk.error);
+      assert.equal(payload?.error?.message, "Arena upstream error");
+      assert.doesNotMatch(responseText, /SecretOnlyFrame|lmarena-stream-stack-only/);
     } finally {
       __setTlsFetchOverrideForTesting(null);
     }

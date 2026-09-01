@@ -35,6 +35,21 @@ const SENSITIVE_KEYS = new Set([
   "runtimeKey",
 ]);
 
+const SENSITIVE_CHALLENGE_KEYS = new Set([
+  "recaptchav3token",
+  "recaptchatoken",
+  "turnstiletoken",
+  "prooftoken",
+  "resumetoken",
+  "preparetoken",
+]);
+
+function isSensitivePayloadKey(key: string): boolean {
+  if (SENSITIVE_KEYS.has(key)) return true;
+  const normalizedKey = key.replace(/[-_]/g, "").toLowerCase();
+  return SENSITIVE_CHALLENGE_KEYS.has(normalizedKey);
+}
+
 type JsonRecord = Record<string, unknown>;
 
 const ENCRYPTED_REASONING_KEY = "encrypted_content";
@@ -125,7 +140,7 @@ export function redactPayload(payload: unknown): unknown {
 
   const redacted: JsonRecord = {};
   for (const [key, value] of Object.entries(payload)) {
-    if (SENSITIVE_KEYS.has(key)) {
+    if (isSensitivePayloadKey(key)) {
       redacted[key] = "[REDACTED]";
     } else if (typeof value === "string" && value.startsWith("Bearer ")) {
       redacted[key] = "Bearer [REDACTED]";

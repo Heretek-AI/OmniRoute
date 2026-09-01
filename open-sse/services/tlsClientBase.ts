@@ -25,18 +25,41 @@
 // ---------------------------------------------------------------------------
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { join, dirname } from "node:path";
-import { open, unlink, rmdir, readFile, mkdtemp, stat } from "node:fs/promises";
+import { join } from "node:path";
+import { open, readFile, mkdtemp, stat } from "node:fs/promises";
 
 // ---------------------------------------------------------------------------
 // Proxy resolution — every provider file imports both of these
 // ---------------------------------------------------------------------------
 import { resolveProxyForRequest } from "../utils/proxyFetch.ts";
+import { sanitizeErrorMessage } from "../utils/error.ts";
+import { logger } from "../utils/logger.ts";
 import { resolveTlsClientProxyUrl } from "./tlsClientProxy.ts";
 import {
   buildNativeTlsClientOptions,
   resolveVerifiedTlsClientNativeLibrary,
 } from "./tlsClientDownloadDir.ts";
+import {
+  acquireNativeTlsClientLease,
+  activateNativeTlsClientLease,
+  installNativeTlsClientExitHook,
+  releaseNativeTlsClientLease,
+  type NativeTlsClientLease,
+} from "./tlsClientLifecycleRegistry.ts";
+import {
+  cleanupTlsClientStreamPath,
+  createSanitizedTlsStreamError,
+  createTlsClientTailStream,
+  sanitizeTlsClientErrorMessage,
+  type TlsClientTailVariant,
+} from "./tlsClientStream.ts";
+import { makeAbortError, raceWithTimeout, TlsClientHangError } from "./tlsClientTimeout.ts";
+
+export { makeAbortError, raceWithTimeout, TlsClientHangError };
+
+const tlsClientLogger = logger("TLSClient");
+const DEFAULT_CLIENT_START_TIMEOUT_MS = 30_000;
+const DEFAULT_PARTIAL_CLIENT_CLEANUP_TIMEOUT_MS = 5_000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -94,7 +117,7 @@ export interface TlsClientConfig {
    *   "B1" — Buffer.from enqueue, excludes EOF, inline drainRemaining
    *   "B2" — Buffer.from enqueue, excludes EOF, extracted helpers
    */
-  tailFileVariant: "A" | "B1" | "B2";
+  tailFileVariant: TlsClientTailVariant;
   /**
    * Response validation mode:
    *   "sse" — check looksLikeSse → fall back to buffered
@@ -125,8 +148,13 @@ export class TlsClientUnavailableError extends Error {
   override name = "TlsClientUnavailableError";
 }
 
-export class TlsClientHangError extends Error {
-  override name = "TlsClientHangError";
+function isTlsClientHangError(error: unknown): error is TlsClientHangError {
+  try {
+    return error instanceof TlsClientHangError;
+  } catch {
+    // A rejected Proxy may throw while instanceof walks its prototype chain.
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -137,79 +165,12 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function makeAbortError(signal: AbortSignal): Error {
-  const reason = signal.reason;
-  if (reason instanceof Error) return reason;
-  const err = new Error(typeof reason === "string" ? reason : "The operation was aborted");
-  err.name = "AbortError";
-  return err;
-}
-
 export function toHeaders(raw: Record<string, string[]> | null | undefined): Headers {
   const h = new Headers();
   for (const [k, vs] of Object.entries(raw || {})) {
     for (const v of vs) h.append(k, v);
   }
   return h;
-}
-
-export async function raceWithTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  signal: AbortSignal | null | undefined
-): Promise<T> {
-  // If no signal, just race with a simple timeout.
-  if (!signal) {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new TlsClientHangError()), timeoutMs);
-      }),
-    ]);
-  }
-
-  // With signal, race against both timeout and abort.
-  return await new Promise<T>((resolve, reject) => {
-    let settled = false;
-
-    const done = (fn: () => void) => {
-      if (!settled) {
-        settled = true;
-        fn();
-      }
-    };
-
-    const timer = setTimeout(() => {
-      done(() => reject(new TlsClientHangError()));
-    }, timeoutMs);
-
-    const onAbort = () => {
-      done(() => reject(makeAbortError(signal)));
-    };
-
-    if (signal.aborted) {
-      onAbort();
-    } else {
-      signal.addEventListener("abort", onAbort, { once: true });
-    }
-
-    promise.then(
-      (v) => {
-        done(() => {
-          clearTimeout(timer);
-          signal.removeEventListener("abort", onAbort);
-          resolve(v);
-        });
-      },
-      (e) => {
-        done(() => {
-          clearTimeout(timer);
-          signal.removeEventListener("abort", onAbort);
-          reject(e);
-        });
-      }
-    );
-  });
 }
 
 /** Read up to N bytes from a file, returning the utf-8 decoded text. */
@@ -280,23 +241,6 @@ export function isCloudflareChallenge(text: string | null | undefined): boolean 
   );
 }
 
-// ---------------------------------------------------------------------------
-// Temp-path cleanup — two variants
-// ---------------------------------------------------------------------------
-
-/** Variant A: substring-based parent dir extraction (ChatGPT, Claude, Perplexity, Notion) */
-async function cleanupTempPathSubstring(path: string): Promise<void> {
-  await unlink(path).catch(() => {});
-  const dir = path.substring(0, path.lastIndexOf("/"));
-  await rmdir(dir).catch(() => {});
-}
-
-/** Variant B: dirname-based parent dir extraction (Grok, LMArena) */
-async function cleanupTempPathDirname(path: string): Promise<void> {
-  await unlink(path).catch(() => {});
-  await rmdir(dirname(path)).catch(() => {});
-}
-
 async function readTextFileIfExists(path: string): Promise<string> {
   try {
     return await readFile(path, "utf8");
@@ -305,302 +249,12 @@ async function readTextFileIfExists(path: string): Promise<string> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// TailFile — Variant A
-//   Uint8Array enqueue, includes EOF symbol, substring cleanup
-//   Used by: ChatGPT, Claude, Perplexity, Notion
-// ---------------------------------------------------------------------------
-
-function tailFileVariantA(
-  path: string,
-  eofSymbol: string,
-  done: Promise<TlsResponseLike>,
-  signal: AbortSignal | null = null,
-  cleanupPath: string
-): ReadableStream<Uint8Array> {
-  return new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const fd = await open(path, "r");
-      const buf = Buffer.alloc(64 * 1024);
-      let offset = 0;
-      let finished = false;
-      let aborted = false;
-      let upstreamError: Error | null = null;
-
-      done.then(
-        () => {
-          finished = true;
-        },
-        (err) => {
-          upstreamError = err instanceof Error ? err : new Error(String(err));
-          finished = true;
-        }
-      );
-
-      const onAbort = () => {
-        aborted = true;
-      };
-      if (signal) {
-        if (signal.aborted) aborted = true;
-        else signal.addEventListener("abort", onAbort, { once: true });
-      }
-
-      let errored = false;
-      try {
-        while (!aborted) {
-          const { bytesRead } = await fd.read(buf, 0, buf.length, offset);
-          if (bytesRead > 0) {
-            const chunk = buf.subarray(0, bytesRead);
-            offset += bytesRead;
-            const text = chunk.toString("utf8");
-            if (text.includes(eofSymbol)) {
-              const cutAt = text.indexOf(eofSymbol) + eofSymbol.length;
-              controller.enqueue(new Uint8Array(chunk.subarray(0, cutAt)));
-              break;
-            }
-            controller.enqueue(new Uint8Array(chunk));
-          } else if (finished) {
-            if (upstreamError) {
-              controller.error(upstreamError);
-              errored = true;
-            }
-            break;
-          } else {
-            await sleep(25);
-          }
-        }
-      } catch (err) {
-        controller.error(err);
-        errored = true;
-      } finally {
-        if (signal) signal.removeEventListener("abort", onAbort);
-        await fd.close().catch(() => {});
-        await cleanupTempPathSubstring(cleanupPath);
-        if (!errored) controller.close();
-      }
-    },
-  });
-}
-
-// ---------------------------------------------------------------------------
-// TailFile — Variant B1
-//   Buffer.from enqueue, excludes EOF symbol, inline drainRemaining loop
-//   Used by: Grok
-// ---------------------------------------------------------------------------
-
-function tailFileVariantB1(
-  path: string,
-  eofSymbol: string,
-  done: Promise<TlsResponseLike>,
-  signal: AbortSignal | null = null,
-  cleanupPath: string
-): ReadableStream<Uint8Array> {
-  return new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const fd = await open(path, "r");
-      const buf = Buffer.alloc(64 * 1024);
-      let offset = 0;
-      let finished = false;
-      let aborted = false;
-      let upstreamError: Error | null = null;
-
-      done.then(
-        () => {
-          finished = true;
-        },
-        (err) => {
-          upstreamError = err instanceof Error ? err : new Error(String(err));
-          finished = true;
-        }
-      );
-
-      const onAbort = () => {
-        aborted = true;
-      };
-      if (signal) {
-        if (signal.aborted) aborted = true;
-        else signal.addEventListener("abort", onAbort, { once: true });
-      }
-
-      let errored = false;
-      try {
-        while (!aborted) {
-          const { bytesRead } = await fd.read(buf, 0, buf.length, offset);
-          if (bytesRead > 0) {
-            const chunk = buf.subarray(0, bytesRead);
-            offset += bytesRead;
-            const text = chunk.toString("utf8");
-
-            if (text.includes(eofSymbol)) {
-              const beforeEof = text.substring(0, text.indexOf(eofSymbol));
-              if (beforeEof) {
-                controller.enqueue(Buffer.from(beforeEof, "utf8"));
-              }
-              controller.close();
-              return;
-            }
-
-            controller.enqueue(Buffer.from(chunk));
-          }
-
-          if (finished) {
-            // Request finished — drain any remaining bytes then close.
-            while (true) {
-              const { bytesRead } = await fd.read(buf, 0, buf.length, offset);
-              if (bytesRead === 0) break;
-              const chunk = buf.subarray(0, bytesRead);
-              offset += bytesRead;
-              const text = chunk.toString("utf8");
-
-              if (text.includes(eofSymbol)) {
-                const beforeEof = text.substring(0, text.indexOf(eofSymbol));
-                if (beforeEof) {
-                  controller.enqueue(Buffer.from(beforeEof, "utf8"));
-                }
-                controller.close();
-                return;
-              }
-
-              controller.enqueue(Buffer.from(chunk));
-            }
-
-            if (upstreamError && !errored) {
-              errored = true;
-              controller.error(upstreamError);
-              return;
-            }
-
-            controller.close();
-            return;
-          }
-
-          await sleep(25);
-        }
-      } catch (err) {
-        if (!errored) {
-          errored = true;
-          controller.error(err instanceof Error ? err : new Error(String(err)));
-        }
-      } finally {
-        await fd.close().catch(() => {});
-        await cleanupTempPathDirname(cleanupPath);
-        if (signal) signal.removeEventListener("abort", onAbort);
-      }
-    },
-  });
-}
-
-// ---------------------------------------------------------------------------
-// TailFile — Variant B2
-//   Buffer.from enqueue, excludes EOF symbol, extracted helpers
-//   Used by: LMArena
-// ---------------------------------------------------------------------------
-
-type FileHandle = Awaited<ReturnType<typeof open>>;
-
-function enqueueChunkMaybeEof(
-  controller: ReadableStreamDefaultController<Uint8Array>,
-  chunk: Buffer,
-  eofSymbol: string
-): boolean {
-  const text = chunk.toString("utf8");
-  if (!text.includes(eofSymbol)) {
-    controller.enqueue(Buffer.from(chunk));
-    return false;
-  }
-  const beforeEof = text.substring(0, text.indexOf(eofSymbol));
-  if (beforeEof) controller.enqueue(Buffer.from(beforeEof, "utf8"));
-  controller.close();
-  return true;
-}
-
-async function drainRemaining(
-  fd: FileHandle,
-  buf: Buffer,
-  offsetRef: { offset: number },
-  controller: ReadableStreamDefaultController<Uint8Array>,
-  eofSymbol: string
-): Promise<"closed" | "drained"> {
-  while (true) {
-    const { bytesRead } = await fd.read(buf, 0, buf.length, offsetRef.offset);
-    if (bytesRead === 0) return "drained";
-    const chunk = buf.subarray(0, bytesRead);
-    offsetRef.offset += bytesRead;
-    if (enqueueChunkMaybeEof(controller, chunk, eofSymbol)) return "closed";
-  }
-}
-
-function tailFileVariantB2(
-  path: string,
-  eofSymbol: string,
-  done: Promise<TlsResponseLike>,
-  signal: AbortSignal | null = null,
-  cleanupPath: string
-): ReadableStream<Uint8Array> {
-  return new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const fd = await open(path, "r");
-      const buf = Buffer.alloc(64 * 1024);
-      const offsetRef = { offset: 0 };
-      let finished = false;
-      let aborted = false;
-      let upstreamError: Error | null = null;
-      let errored = false;
-
-      done.then(
-        () => {
-          finished = true;
-        },
-        (err) => {
-          upstreamError = err instanceof Error ? err : new Error(String(err));
-          finished = true;
-        }
-      );
-
-      const onAbort = () => {
-        aborted = true;
-      };
-      if (signal) {
-        if (signal.aborted) aborted = true;
-        else signal.addEventListener("abort", onAbort, { once: true });
-      }
-
-      try {
-        while (!aborted) {
-          const { bytesRead } = await fd.read(buf, 0, buf.length, offsetRef.offset);
-          if (bytesRead > 0) {
-            const chunk = buf.subarray(0, bytesRead);
-            offsetRef.offset += bytesRead;
-            if (enqueueChunkMaybeEof(controller, chunk, eofSymbol)) return;
-          }
-
-          if (!finished) {
-            await sleep(25);
-            continue;
-          }
-
-          const drained = await drainRemaining(fd, buf, offsetRef, controller, eofSymbol);
-          if (drained === "closed") return;
-          if (upstreamError && !errored) {
-            errored = true;
-            controller.error(upstreamError);
-            return;
-          }
-          controller.close();
-          return;
-        }
-      } catch (err) {
-        if (!errored) {
-          errored = true;
-          controller.error(err instanceof Error ? err : new Error(String(err)));
-        }
-      } finally {
-        await fd.close().catch(() => {});
-        await cleanupTempPathDirname(cleanupPath);
-        if (signal) signal.removeEventListener("abort", onAbort);
-      }
-    },
-  });
+function sanitizeTlsFetchRejection(error: unknown): TlsResponseLike {
+  return {
+    status: 502,
+    headers: {},
+    body: sanitizeTlsClientErrorMessage(error),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -612,43 +266,66 @@ function tailFileVariantB2(
  * Uses dynamic `import("tls-client-node")` with `{ runtimeMode: "native" }`
  * and `client.start()`, matching the original per-provider lifecycle.
  */
-export function createGetClient(config: {
-  providerName: string;
-  tlsProfile?: string;
-}): () => Promise<{
+type TlsClientConstructor = new (config: Record<string, unknown>) => {
+  start: () => Promise<void>;
   request: (url: string, opts: Record<string, unknown>) => Promise<TlsResponseLike>;
-}> {
-  let clientPromise: Promise<{
-    request: (url: string, opts: Record<string, unknown>) => Promise<TlsResponseLike>;
-  }> | null = null;
-  let exitHookInstalled = false;
+  stop: () => Promise<void>;
+};
 
-  const installExitHook = (client: { stop: () => Promise<void> }): void => {
-    if (!exitHookInstalled) {
-      exitHookInstalled = true;
-      process.on("exit", () => {
-        void client.stop();
+type TlsClientInstance = InstanceType<TlsClientConstructor>;
+type TlsClientRequestClient = Pick<TlsClientInstance, "request">;
+type ManagedTlsClientGetter = {
+  (): Promise<TlsClientInstance>;
+  invalidate: (expectedClient: TlsClientRequestClient) => Promise<void>;
+};
+
+export function createGetClient(
+  config: {
+    providerName: string;
+    tlsProfile?: string;
+  },
+  dependencies: {
+    loadTlsClient?: () => Promise<{ TLSClient: TlsClientConstructor }>;
+    resolveNativeLibrary?: () => Promise<string>;
+    startTimeoutMs?: number;
+    cleanupTimeoutMs?: number;
+    installExitHook?: (hook: () => void) => void;
+  } = {}
+): ManagedTlsClientGetter {
+  let clientPromise: Promise<TlsClientInstance> | null = null;
+  let activeClient: TlsClientInstance | null = null;
+  let invalidationPromise: Promise<void> | null = null;
+  let invalidatingClient: TlsClientRequestClient | null = null;
+  const clientLeases = new WeakMap<TlsClientInstance, NativeTlsClientLease>();
+  const cleanupTimeoutMs =
+    dependencies.cleanupTimeoutMs ?? DEFAULT_PARTIAL_CLIENT_CLEANUP_TIMEOUT_MS;
+
+  const releaseClientLeaseBounded = async (
+    lease: NativeTlsClientLease,
+    warning: string
+  ): Promise<void> => {
+    try {
+      await releaseNativeTlsClientLease(lease, cleanupTimeoutMs);
+    } catch (stopErr) {
+      tlsClientLogger.warn(warning, {
+        provider: config.providerName,
+        error: sanitizeErrorMessage(stopErr),
       });
     }
   };
 
-  return async function getClient(): Promise<{
-    request: (url: string, opts: Record<string, unknown>) => Promise<TlsResponseLike>;
-  }> {
+  const getClient = async function getClient(): Promise<TlsClientInstance> {
+    if (invalidationPromise) await invalidationPromise;
     if (!clientPromise) {
       clientPromise = (async () => {
-        let TLSClientCtor: {
-          new (config: Record<string, unknown>): {
-            start: () => Promise<void>;
-            request: (url: string, opts: Record<string, unknown>) => Promise<TlsResponseLike>;
-            stop: () => Promise<void>;
-          };
-        };
+        let TLSClientCtor: TlsClientConstructor;
         try {
           // tls-client-node uses a native binary loaded at runtime.
           // The dynamic import delays the binary load until first use — no
           // point crashing startup on machines where it's not installed.
-          const mod = await import("tls-client-node");
+          const mod = dependencies.loadTlsClient
+            ? await dependencies.loadTlsClient()
+            : ((await import("tls-client-node")) as { TLSClient: TlsClientConstructor });
           TLSClientCtor = mod.TLSClient;
         } catch {
           throw new TlsClientUnavailableError(
@@ -657,11 +334,16 @@ export function createGetClient(config: {
         }
         let nativeLibraryPath: string;
         try {
-          nativeLibraryPath = await resolveVerifiedTlsClientNativeLibrary();
+          nativeLibraryPath = await (
+            dependencies.resolveNativeLibrary ?? resolveVerifiedTlsClientNativeLibrary
+          )();
         } catch (err) {
-          const detail = err instanceof Error ? err.message : String(err);
+          tlsClientLogger.warn("Native binary verification failed", {
+            provider: config.providerName,
+            error: sanitizeErrorMessage(err),
+          });
           throw new TlsClientUnavailableError(
-            `tls-client native binary verification failed for ${config.providerName}: ${detail}`
+            `tls-client native binary verification failed for ${config.providerName}`
           );
         }
         const tlsOptions: Record<string, unknown> = {
@@ -670,16 +352,115 @@ export function createGetClient(config: {
         if (config.tlsProfile) {
           tlsOptions.clientIdentifier = config.tlsProfile;
         }
-        const client = new TLSClientCtor(tlsOptions);
-        // Start the native TLS client binding
-        await client.start();
-        installExitHook(client);
+        let client: InstanceType<TlsClientConstructor> | undefined;
+        let clientLease: NativeTlsClientLease | null = null;
+        let rawStartPromise: Promise<void> | null = null;
+        try {
+          client = new TLSClientCtor(tlsOptions);
+          const constructedClient = client;
+          clientLease = await acquireNativeTlsClientLease(
+            nativeLibraryPath,
+            () => constructedClient.stop(),
+            cleanupTimeoutMs
+          );
+          clientLeases.set(client, clientLease);
+          // Start the native TLS client binding.
+          rawStartPromise = client.start();
+          await raceWithTimeout(
+            rawStartPromise,
+            dependencies.startTimeoutMs ?? DEFAULT_CLIENT_START_TIMEOUT_MS,
+            null
+          );
+          activateNativeTlsClientLease(clientLease);
+        } catch (err) {
+          tlsClientLogger.warn("Native TLS client initialization failed", {
+            provider: config.providerName,
+            error: sanitizeErrorMessage(err),
+          });
+          if (client && clientLease) {
+            if (rawStartPromise && isTlsClientHangError(err)) {
+              const discardedLease = clientLease;
+              const settledLateStart = rawStartPromise.then(
+                () => {
+                  activateNativeTlsClientLease(discardedLease);
+                },
+                (lateStartErr: unknown) => {
+                  tlsClientLogger.warn("Timed-out native TLS client start later rejected", {
+                    provider: config.providerName,
+                    error: sanitizeErrorMessage(lateStartErr),
+                  });
+                }
+              );
+              void settledLateStart.then(() =>
+                releaseClientLeaseBounded(
+                  discardedLease,
+                  "Late native TLS client initialization cleanup failed"
+                )
+              );
+            } else {
+              await releaseClientLeaseBounded(
+                clientLease,
+                "Partial native TLS client cleanup failed"
+              );
+            }
+          }
+          throw new TlsClientUnavailableError(
+            `tls-client native initialization failed for ${config.providerName}`
+          );
+        }
+        activeClient = client;
+        installNativeTlsClientExitHook(dependencies.installExitHook);
 
         return client;
       })();
     }
-    return clientPromise;
+    const pending = clientPromise;
+    try {
+      return await pending;
+    } catch (err) {
+      // A transient download/start failure must not poison this provider until
+      // process restart. Concurrent callers still share the same pending attempt;
+      // the next call creates a fresh one only after that attempt rejects.
+      if (clientPromise === pending) clientPromise = null;
+      throw err;
+    }
   };
+
+  getClient.invalidate = async (expectedClient: TlsClientRequestClient): Promise<void> => {
+    if (invalidationPromise && invalidatingClient === expectedClient) {
+      await invalidationPromise;
+      return;
+    }
+    if (activeClient !== expectedClient) return;
+
+    const pendingClient = clientPromise;
+    activeClient = null;
+    clientPromise = null;
+    invalidatingClient = expectedClient;
+
+    const cleanupPromise = (async () => {
+      let client: TlsClientInstance | null = null;
+      try {
+        client = pendingClient ? await pendingClient : null;
+      } catch {
+        // A rejected pending client never became active, so no client lease exists to release here.
+        return;
+      }
+      if (client !== expectedClient) return;
+      const lease = clientLeases.get(client);
+      if (!lease) return;
+
+      await releaseClientLeaseBounded(lease, "Native TLS client invalidation cleanup failed");
+    })();
+
+    invalidationPromise = cleanupPromise.finally(() => {
+      invalidationPromise = null;
+      invalidatingClient = null;
+    });
+    await invalidationPromise;
+  };
+
+  return getClient;
 }
 
 /**
@@ -693,17 +474,6 @@ export function resolveProxyUrl(domain: string, perCall: string | undefined): st
 // ---------------------------------------------------------------------------
 // Factory — creates provider-specific tlsFetch + helpers
 // ---------------------------------------------------------------------------
-
-const CLEANUP_VARIANTS = {
-  A: cleanupTempPathSubstring,
-  B: cleanupTempPathDirname,
-} as const;
-
-const TAIL_FILE_VARIANTS = {
-  A: tailFileVariantA,
-  B1: tailFileVariantB1,
-  B2: tailFileVariantB2,
-} as const;
 
 export interface TlsClientModule {
   tlsFetch: (url: string, options: TlsFetchOptions) => Promise<TlsFetchResult>;
@@ -719,6 +489,13 @@ export interface TlsClientModule {
     signal?: AbortSignal | null,
     hardTimeoutMs?: number,
     firstByteTimeoutMs?: number
+  ) => Promise<TlsFetchResult>;
+  __tlsFetchNonStreamingForTesting?: (
+    client: { request: (url: string, opts: Record<string, unknown>) => Promise<TlsResponseLike> },
+    url: string,
+    requestOptions: Record<string, unknown>,
+    signal?: AbortSignal | null,
+    hardTimeoutMs?: number
   ) => Promise<TlsFetchResult>;
 }
 
@@ -747,29 +524,15 @@ export function createTlsClientModule(config: TlsClientConfig): TlsClientModule 
 
   const getClient = createGetClient({ providerName, tlsProfile });
 
-  function resetClientCache(): void {
-    // The getClient closure holds clientPromise — by design the only
-    // reference is inside getClient's closure. After a hang we need
-    // the next call to spawn a fresh binding. We achieve this by
-    // clearing the local reference; the module-level tlsFetch will
-    // re-read via getClient which recreates it.
-    // Since getClient's clientPromise is a closure variable, we
-    // re-create getClient itself:
-    Object.assign(localState, {
-      getClient: createGetClient({ providerName, tlsProfile }),
-    });
-    // Note: this is safe because only tlsFetch calls getClient.
-    // A concurrent in-flight call holds its own reference.
+  async function resetClientCache(client: TlsClientRequestClient): Promise<void> {
+    await getClient.invalidate(client);
   }
-
-  const localState: { getClient: typeof getClient } = { getClient };
 
   let testOverride: ((url: string, options: TlsFetchOptions) => Promise<TlsFetchResult>) | null =
     null;
 
-  const tailFileFn = TAIL_FILE_VARIANTS[tailFileVariant];
-
-  const cleanupFn = tailFileVariant === "A" ? cleanupTempPathSubstring : cleanupTempPathDirname;
+  const cleanupFn = (path: string): Promise<void> =>
+    cleanupTlsClientStreamPath(tailFileVariant, path);
 
   async function tlsFetchStreaming(
     client: { request: (url: string, opts: Record<string, unknown>) => Promise<TlsResponseLike> },
@@ -790,25 +553,29 @@ export function createTlsClientModule(config: TlsClientConfig): TlsClientModule 
       streamOutputEOFSymbol: eofSymbol,
     };
 
+    let nativeRequest: Promise<TlsResponseLike>;
+    try {
+      nativeRequest = client.request(url, streamOpts);
+    } catch (err) {
+      await cleanupFn(path);
+      throw createSanitizedTlsStreamError(err);
+    }
+
     let resetOnHang = true;
-    const requestPromise = raceWithTimeout(
-      client.request(url, streamOpts),
-      hardTimeoutMs,
-      signal
-    ).catch((err: unknown) => {
-      if (resetOnHang && err instanceof TlsClientHangError) {
-        resetClientCache();
-        resetOnHang = false;
+    const requestPromise = raceWithTimeout(nativeRequest, hardTimeoutMs, signal).catch(
+      async (err: unknown) => {
+        if (resetOnHang && isTlsClientHangError(err)) {
+          resetOnHang = false;
+          await resetClientCache(client);
+        }
+        throw err;
       }
-      throw err;
-    });
+    );
 
     // Wait for the file to exist AND have at least one byte.
     const ready = await waitForContent(path, firstByteMs, requestPromise);
     if (!ready) {
-      const r = await requestPromise.catch(
-        (e) => ({ status: 502, headers: {}, body: String(e) }) as TlsResponseLike
-      );
+      const r = await requestPromise.catch(sanitizeTlsFetchRejection);
       const fileText = await readTextFileIfExists(path);
       await cleanupFn(path);
       return {
@@ -819,7 +586,13 @@ export function createTlsClientModule(config: TlsClientConfig): TlsClientModule 
       };
     }
 
-    const peek = await readFirstBytes(path, 256);
+    let peek: string;
+    try {
+      peek = await readFirstBytes(path, 256);
+    } catch (err) {
+      await cleanupFn(path);
+      throw createSanitizedTlsStreamError(err);
+    }
 
     if (responseValidation === "cf") {
       // Cloudflare challenge check
@@ -845,9 +618,7 @@ export function createTlsClientModule(config: TlsClientConfig): TlsClientModule 
     } else {
       // SSE validation — if it doesn't look like SSE, return buffered
       if (!looksLikeSse(peek)) {
-        const r = await requestPromise.catch(
-          (e) => ({ status: 502, headers: {}, body: String(e) }) as TlsResponseLike
-        );
+        const r = await requestPromise.catch(sanitizeTlsFetchRejection);
         const fileText = await readTextFileIfExists(path);
         await cleanupFn(path);
         return {
@@ -860,7 +631,13 @@ export function createTlsClientModule(config: TlsClientConfig): TlsClientModule 
     }
 
     // Looks valid — create streaming response.
-    const stream = tailFileFn(path, eofSymbol, requestPromise, signal, path);
+    const stream = createTlsClientTailStream({
+      variant: tailFileVariant,
+      path,
+      eofSymbol,
+      done: requestPromise,
+      signal,
+    });
 
     const contentType = responseValidation === "cf" ? "application/x-ndjson" : "text/event-stream";
 
@@ -871,6 +648,35 @@ export function createTlsClientModule(config: TlsClientConfig): TlsClientModule 
     return { status: 200, headers, text: null, body: stream };
   }
 
+  async function tlsFetchNonStreaming(
+    client: { request: (url: string, opts: Record<string, unknown>) => Promise<TlsResponseLike> },
+    url: string,
+    requestOptions: Record<string, unknown>,
+    signal: AbortSignal | null,
+    hardTimeoutMs: number
+  ): Promise<TlsFetchResult> {
+    let tlsResponse: TlsResponseLike;
+    try {
+      tlsResponse = await raceWithTimeout(
+        client.request(url, requestOptions),
+        hardTimeoutMs,
+        signal
+      );
+    } catch (err) {
+      if (isTlsClientHangError(err)) {
+        await resetClientCache(client);
+      }
+      throw err;
+    }
+    if (signal?.aborted) throw makeAbortError(signal);
+    return {
+      status: tlsResponse.status,
+      headers: toHeaders(tlsResponse.headers),
+      text: tlsResponse.body,
+      body: null,
+    };
+  }
+
   async function tlsFetch(url: string, options: TlsFetchOptions = {}): Promise<TlsFetchResult> {
     // Resolve proxyUrl early so test overrides and the real path both see it.
     const resolvedProxyUrl = resolveProxyUrl(proxyDomainOverride ?? domain, options.proxyUrl);
@@ -879,7 +685,7 @@ export function createTlsClientModule(config: TlsClientConfig): TlsClientModule 
     if (options.signal?.aborted) {
       throw makeAbortError(options.signal);
     }
-    const client = await localState.getClient();
+    const client = await getClient();
     if (options.signal?.aborted) {
       throw makeAbortError(options.signal);
     }
@@ -909,28 +715,13 @@ export function createTlsClientModule(config: TlsClientConfig): TlsClientModule 
       );
     }
 
-    let tlsResponse: TlsResponseLike;
-    try {
-      tlsResponse = await raceWithTimeout(
-        client.request(url, requestOptions),
-        (options.timeoutMs ?? defaultTimeoutMs) + hardTimeoutGraceMs,
-        options.signal ?? null
-      );
-    } catch (err) {
-      if (err instanceof TlsClientHangError) {
-        resetClientCache();
-      }
-      throw err;
-    }
-    if (options.signal?.aborted) {
-      throw makeAbortError(options.signal);
-    }
-    return {
-      status: tlsResponse.status,
-      headers: toHeaders(tlsResponse.headers),
-      text: tlsResponse.body,
-      body: null,
-    };
+    return await tlsFetchNonStreaming(
+      client,
+      url,
+      requestOptions,
+      options.signal ?? null,
+      (options.timeoutMs ?? defaultTimeoutMs) + hardTimeoutGraceMs
+    );
   }
 
   const module: TlsClientModule = {
@@ -963,6 +754,15 @@ export function createTlsClientModule(config: TlsClientConfig): TlsClientModule 
         hardTimeoutMs,
         firstByteMs
       );
+    };
+    module.__tlsFetchNonStreamingForTesting = (
+      client,
+      url,
+      requestOptions,
+      signal = null,
+      hardTimeoutMs = defaultTimeoutMs + hardTimeoutGraceMs
+    ): Promise<TlsFetchResult> => {
+      return tlsFetchNonStreaming(client, url, requestOptions, signal, hardTimeoutMs);
     };
   }
 

@@ -95,6 +95,9 @@ jobs:
           OMNIROUTE_USE_TURBOPACK: "0"
         run: npm run build
 
+      - name: Verify TLS client runtime seed
+        run: node scripts/build/fixTlsClientNodeBinary.mjs --strict --standalone-dir .build/next/standalone
+
       - name: Pack standalone bundle
         # Deterministic tar.gz + byte-level manifest; the manifest embeds the
         # archive's own sha256 so artifact-transfer corruption is caught before
@@ -258,6 +261,8 @@ jobs:
         working-directory: electron
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OMNIROUTE_ELECTRON_TARGET_PLATFORM: ${{ matrix.os }}
+          OMNIROUTE_ELECTRON_TARGET_ARCHES: ${{ matrix.arch }}
         run: npm run build:${{ matrix.target }}
 
       - name: Smoke packaged Electron app

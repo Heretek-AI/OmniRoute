@@ -8,12 +8,22 @@ import {
   PACK_ARTIFACT_ALLOWED_EXACT_PATHS,
   PACK_ARTIFACT_ALLOWED_PATH_PREFIXES,
   PACK_ARTIFACT_REQUIRED_PATHS,
+  TLS_CLIENT_RUNTIME_SEED_PATHS,
   findMissingArtifactPaths,
   findUnexpectedArtifactPaths,
   normalizeArtifactPath,
   parseJsonArrayOutput,
   parseJsonValuesOutput,
 } from "../../scripts/build/pack-artifact-policy.ts";
+
+const EXPECTED_TLS_CLIENT_RUNTIME_SEED_PATHS = [
+  "runtime-assets/tls-client/bin/tls-client-darwin-amd64-1.15.1.dylib",
+  "runtime-assets/tls-client/bin/tls-client-darwin-arm64-1.15.1.dylib",
+  "runtime-assets/tls-client/bin/tls-client-linux-arm64-1.15.1.so",
+  "runtime-assets/tls-client/bin/tls-client-linux-ubuntu-amd64-1.15.1.so",
+  "runtime-assets/tls-client/bin/tls-client-windows-32-1.15.1.dll",
+  "runtime-assets/tls-client/bin/tls-client-windows-64-1.15.1.dll",
+] as const;
 
 test("normalizeArtifactPath normalizes slashes and leading relative markers", () => {
   assert.equal(
@@ -186,6 +196,31 @@ test("build-next-isolated sibling imports are allowed in the published package",
   assert.deepEqual(unexpectedPaths, []);
 });
 
+test("assembleStandalone helper imports are published, allowed, and required", () => {
+  const packageFiles: string[] = JSON.parse(
+    readFileSync(new URL("../../package.json", import.meta.url), "utf8")
+  ).files;
+  const helperPaths = [
+    "scripts/build/standaloneSidecarCopy.mjs",
+    "scripts/build/tlsClientAssetCopy.mjs",
+  ];
+
+  for (const helperPath of helperPaths) {
+    assert.ok(
+      packageFiles.includes(helperPath),
+      `${helperPath} must ship via package.json files[]`
+    );
+    assert.ok(
+      PACK_ARTIFACT_ALLOWED_EXACT_PATHS.includes(helperPath),
+      `${helperPath} must be authorized by the tarball allowlist`
+    );
+    assert.ok(
+      PACK_ARTIFACT_REQUIRED_PATHS.includes(helperPath),
+      `${helperPath} must be required so npm packing fails loudly if it disappears`
+    );
+  }
+});
+
 test("webdav-handler.mjs is allowed in staging dist/ (server-ws.mjs dependency, missed in 3.8.22 build)", () => {
   const unexpectedPaths = findUnexpectedArtifactPaths(["webdav-handler.mjs"], {
     exactPaths: APP_STAGING_ALLOWED_EXACT_PATHS,
@@ -226,6 +261,11 @@ test("setupPolyfill.ts is allowed in the tarball (bin/omniroute.mjs imports it a
 });
 
 test("findMissingArtifactPaths flags missing root runtime files in the tarball", () => {
+  assert.deepEqual(
+    [...TLS_CLIENT_RUNTIME_SEED_PATHS].sort(),
+    EXPECTED_TLS_CLIENT_RUNTIME_SEED_PATHS
+  );
+
   const missingPaths = findMissingArtifactPaths(
     [
       "dist/server.js",
@@ -253,14 +293,18 @@ test("findMissingArtifactPaths flags missing root runtime files in the tarball",
     "bin/mcp-server.mjs",
     "bin/mcpStdioConsoleGuard.mjs",
     "bin/nodeRuntimeSupport.mjs",
+    "dist/LICENSE",
+    "dist/THIRD_PARTY_NOTICES.md",
     "dist/head-response-guard.cjs",
     "dist/http-method-guard.cjs",
     "dist/main-server-timeouts.mjs",
+    "dist/open-sse/config/tlsClientNativeManifest.json",
     "dist/open-sse/services/compression/engines/rtk/filters/generic-output.json",
     "dist/open-sse/services/compression/rules/en/filler.json",
     "dist/open-sse/vendor/codex-chatgpt-web/adapters/chatgpt-web/mcp-server.js",
     "dist/peer-stamp.mjs",
     "dist/responses-ws-proxy.mjs",
+    ...EXPECTED_TLS_CLIENT_RUNTIME_SEED_PATHS.map((seedPath) => `dist/${seedPath}`),
     "dist/server-ws.mjs",
     "dist/src/lib/usage/callLogArtifactWorker.js",
     "dist/systemd-notify.mjs",
@@ -271,6 +315,8 @@ test("findMissingArtifactPaths flags missing root runtime files in the tarball",
     "scripts/build/fixTlsClientNodeBinary.mjs",
     "scripts/build/native-binary-compat.mjs",
     "scripts/build/runtime-env.mjs",
+    "scripts/build/standaloneSidecarCopy.mjs",
+    "scripts/build/tlsClientAssetCopy.mjs",
     "scripts/packs/optionalPackInstaller.mjs",
     "scripts/packs/optionalPackManifest.mjs",
     "src/shared/utils/nodeRuntimeSupport.ts",

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { assembleStandalone } from "./assembleStandalone.mjs";
 import { assertSqlitePrebuildExists } from "./electronRebuildPlan.mjs";
 import { pruneElectronRuntimeDocs } from "./electronRuntimeDocs.mjs";
+import { fixTlsClientNodeBinary } from "./fixTlsClientNodeBinary.mjs";
 import { stageOptionalPacks } from "./optionalPackStaging.mjs";
 import { runBuildTool } from "./buildToolRunner.mjs";
 
@@ -17,6 +18,14 @@ const NEXT_DIST_DIR = process.env.NEXT_DIST_DIR || ".build/next";
 const DIST_DIR = join(ROOT, NEXT_DIST_DIR);
 const STANDALONE_DIR = join(DIST_DIR, "standalone");
 const ELECTRON_STANDALONE_DIR = join(ROOT, ".build", "electron-standalone");
+const ELECTRON_TARGET_PLATFORM = process.env.OMNIROUTE_ELECTRON_TARGET_PLATFORM ?? process.platform;
+const configuredTargetArches = process.env.OMNIROUTE_ELECTRON_TARGET_ARCHES;
+const ELECTRON_TARGET_ARCHES =
+  configuredTargetArches === undefined
+    ? ELECTRON_TARGET_PLATFORM === "linux"
+      ? ["x64", "arm64"]
+      : [process.arch]
+    : configuredTargetArches.split(",").map((arch) => arch.trim());
 
 // --- Electron-UNIQUE: resolve the nested server.js location ----------------
 
@@ -152,6 +161,15 @@ process.on("uncaughtException", logContextualError);
 const bundleDir = resolveStandaloneBundleDir();
 assertBundleIsPackagable(bundleDir);
 
+await fixTlsClientNodeBinary({
+  rootDir: ROOT,
+  strict: true,
+  platform: ELECTRON_TARGET_PLATFORM,
+  arches: ELECTRON_TARGET_ARCHES,
+  standaloneDir: STANDALONE_DIR,
+  requireStandalone: true,
+});
+
 // Clean the stage dir before assembly
 rmSync(ELECTRON_STANDALONE_DIR, { recursive: true, force: true });
 
@@ -234,6 +252,15 @@ await stageOptionalPacks({
   stagingRoot: ELECTRON_STANDALONE_DIR,
   packsOutDir: OPTIONAL_PACKS_OUT_DIR,
   log: (msg) => console.log(msg.replace(/^\[optional-packs\]/, "[electron]")),
+});
+
+await fixTlsClientNodeBinary({
+  rootDir: ROOT,
+  strict: true,
+  platform: ELECTRON_TARGET_PLATFORM,
+  arches: ELECTRON_TARGET_ARCHES,
+  standaloneDir: ELECTRON_STANDALONE_DIR,
+  requireStandalone: true,
 });
 
 console.log(

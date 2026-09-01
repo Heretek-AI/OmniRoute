@@ -34,6 +34,27 @@ function makeHeaders(map = {}) {
   return h;
 }
 
+function hostilePrototypeFailure(label: string): unknown {
+  return new Proxy(
+    {},
+    {
+      getPrototypeOf() {
+        throw new Error(`access_token=${label}-prototype-secret at /srv/private/${label}.ts:1:2`);
+      },
+      get(_target, property) {
+        if (property === "toString") {
+          return () => {
+            throw new Error(
+              `access_token=${label}-coercion-secret at /srv/private/${label}-coercion.ts:1:2`
+            );
+          };
+        }
+        return undefined;
+      },
+    }
+  );
+}
+
 async function withEnv(overrides, fn) {
   const keys = [
     "OMNIROUTE_PUBLIC_BASE_URL",
@@ -41,6 +62,9 @@ async function withEnv(overrides, fn) {
     "NEXT_PUBLIC_BASE_URL",
     "BASE_URL",
     "PORT",
+    "OMNIROUTE_CGPT_WEB_PRO_TIMEOUT_MS",
+    "OMNIROUTE_CGPT_WEB_PRO_POLL_INTERVAL_MS",
+    "OMNIROUTE_CGPT_WEB_IMAGE_TIMEOUT_MS",
   ];
   const previous = new Map(keys.map((key) => [key, process.env[key]]));
 
@@ -69,7 +93,9 @@ type MockTlsConfig = {
   body?: unknown;
   setCookie?: string;
   error?: unknown;
+  requestError?: unknown;
   events?: unknown[];
+  streamError?: unknown;
 };
 
 type MockFetchOptions = {
@@ -77,26 +103,31 @@ type MockFetchOptions = {
   sentinel?: MockTlsConfig;
   conv?: MockTlsConfig;
   dpl?: MockTlsConfig;
+  warmup?: MockTlsConfig;
   fileDownload?: MockTlsConfig;
   attachmentDownload?: MockTlsConfig;
   conversationDetail?: MockTlsConfig | MockTlsConfig[];
   signedDownload?: MockTlsConfig;
+  webSocketRegister?: MockTlsConfig | MockTlsConfig[];
   onSession?: (opts: TlsFetchOptions) => void;
   onSentinel?: (opts: TlsFetchOptions) => void;
   onConv?: (opts: TlsFetchOptions) => void;
   onFileDownload?: (opts: TlsFetchOptions, fileId: string) => void;
   onAttachmentDownload?: (opts: TlsFetchOptions, fileId: string) => void;
+  onWebSocketRegister?: (opts: TlsFetchOptions, call: number) => void;
 };
 
 type MockFetchCalls = {
   session: number;
   dpl: number;
+  warmup: number;
   sentinel: number;
   conv: number;
   fileDownload: number;
   attachmentDownload: number;
   conversationDetail: number;
   signedDownload: number;
+  webSocketRegister: number;
   urls: string[];
   headers: Array<Record<string, string> | undefined>;
   bodies: Array<string | undefined>;
@@ -109,25 +140,30 @@ function installMockFetch({
   sentinel,
   conv,
   dpl,
+  warmup,
   fileDownload,
   attachmentDownload,
   conversationDetail,
   signedDownload,
+  webSocketRegister,
   onSession,
   onSentinel,
   onConv,
   onFileDownload,
   onAttachmentDownload,
+  onWebSocketRegister,
 }: MockFetchOptions = {}) {
   const calls: MockFetchCalls = {
     session: 0,
     dpl: 0,
+    warmup: 0,
     sentinel: 0,
     conv: 0,
     fileDownload: 0,
     attachmentDownload: 0,
     conversationDetail: 0,
     signedDownload: 0,
+    webSocketRegister: 0,
     urls: [],
     headers: [],
     bodies: [],
@@ -149,10 +185,27 @@ function installMockFetch({
         status: 200,
         body: '<html data-build="prod-test123"><script src="https://cdn.oaistatic.com/_next/static/chunks/main-test.js"></script></html>',
       };
+      if (cfg.error) throw cfg.error;
       return {
         status: cfg.status,
         headers: makeHeaders({ "Content-Type": "text/html" }),
         text: cfg.body,
+        body: null,
+      };
+    }
+
+    if (
+      warmup &&
+      (u.includes("/backend-api/me") ||
+        u.includes("/backend-api/conversations?") ||
+        u.includes("/backend-api/models?"))
+    ) {
+      calls.warmup++;
+      if (warmup.error) throw warmup.error;
+      return {
+        status: warmup.status,
+        headers: makeHeaders({ "Content-Type": "application/json" }),
+        text: typeof warmup.body === "string" ? warmup.body : JSON.stringify(warmup.body || {}),
         body: null,
       };
     }
@@ -168,6 +221,7 @@ function installMockFetch({
           user: { id: "user-1" },
         },
       };
+      if (cfg.error) throw cfg.error;
       const headers = makeHeaders({ "Content-Type": "application/json" });
       if (cfg.setCookie) headers.set("set-cookie", cfg.setCookie);
       return {
@@ -185,6 +239,7 @@ function installMockFetch({
         status: 200,
         body: { token: "req-token", proofofwork: { required: false } },
       };
+      if (cfg.error) throw cfg.error;
       return {
         status: cfg.status,
         headers: makeHeaders({ "Content-Type": "application/json" }),
@@ -205,6 +260,7 @@ function installMockFetch({
           status: 200,
           body: { download_url: `https://files.oaiusercontent.com/${m1[1]}?sig=mock` },
         };
+        if (cfg.error) throw cfg.error;
         return {
           status: cfg.status,
           headers: makeHeaders({ "Content-Type": "application/json" }),
@@ -224,6 +280,7 @@ function installMockFetch({
           status: 200,
           body: { download_url: `https://files.oaiusercontent.com/${m1[1]}?sig=mock` },
         };
+        if (cfg.error) throw cfg.error;
         return {
           status: cfg.status,
           headers: makeHeaders({ "Content-Type": "application/json" }),
@@ -240,6 +297,7 @@ function installMockFetch({
     if (/^https:\/\/files\.oaiusercontent\.com\//.test(u)) {
       calls.signedDownload++;
       const cfg = signedDownload ?? { status: 200 };
+      if (cfg.error) throw cfg.error;
       if (cfg.status >= 400) {
         return {
           status: cfg.status,
@@ -258,6 +316,22 @@ function installMockFetch({
         // tls-client-node packages binary bodies as a data:<mime>;base64,...
         // string when isByteResponse is set; the mock mirrors that contract.
         text: `data:image/png;base64,${tinyPng.toString("base64")}`,
+        body: null,
+      };
+    }
+
+    if (u.includes("/backend-api/celsius/ws/user") || u.includes("/register-websocket")) {
+      calls.webSocketRegister++;
+      if (onWebSocketRegister) onWebSocketRegister(opts, calls.webSocketRegister);
+      const cfg = Array.isArray(webSocketRegister)
+        ? (webSocketRegister[Math.min(calls.webSocketRegister - 1, webSocketRegister.length - 1)] ??
+          webSocketRegister[webSocketRegister.length - 1])
+        : (webSocketRegister ?? { status: 404, body: "not mocked" });
+      if (cfg.error) throw cfg.error;
+      return {
+        status: cfg.status,
+        headers: makeHeaders({ "Content-Type": "application/json" }),
+        text: typeof cfg.body === "string" ? cfg.body : JSON.stringify(cfg.body || {}),
         body: null,
       };
     }
@@ -289,6 +363,7 @@ function installMockFetch({
                 },
               },
             });
+        if (cfg.error) throw cfg.error;
         const text = typeof cfg.body === "string" ? cfg.body : JSON.stringify(cfg.body || {});
         return {
           status: cfg.status,
@@ -332,12 +407,25 @@ function installMockFetch({
           },
         ],
       };
+      if (cfg.requestError) throw cfg.requestError;
       if (cfg.error) {
         return {
           status: cfg.status,
           headers: makeHeaders({ "Content-Type": "application/json" }),
           text: JSON.stringify({ detail: cfg.error }),
           body: null,
+        };
+      }
+      if (cfg.streamError) {
+        return {
+          status: cfg.status,
+          headers: makeHeaders({ "Content-Type": "text/event-stream" }),
+          text: null,
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.error(cfg.streamError);
+            },
+          }),
         };
       }
       return {
@@ -546,6 +634,47 @@ test("Refreshed cookie: surfaced via onCredentialsRefreshed callback", async () 
   }
 });
 
+test("Refreshed cookie: persistence warning sanitizes external error details", async () => {
+  reset();
+  const sensitiveError = new Error(
+    "Cannot persist '/home/alice/My Project/private/cookie.pem' access_token=sk-super-secret"
+  );
+  const m = installMockFetch({
+    session: {
+      status: 200,
+      body: {
+        accessToken: "jwt-abc",
+        expires: new Date(Date.now() + 3600_000).toISOString(),
+        user: { id: "user-1" },
+      },
+      setCookie: "__Secure-next-auth.session-token=ROTATED-VALUE; Path=/; HttpOnly; Secure",
+    },
+  });
+  const warningLogs: string[] = [];
+  try {
+    const executor = new ChatGptWebExecutor();
+    const result = await executor.execute({
+      model: "gpt-5.5",
+      body: { messages: [{ role: "user", content: "hi" }] },
+      stream: false,
+      credentials: { apiKey: "old-cookie-warning" },
+      signal: AbortSignal.timeout(10_000),
+      log: { warn: (_tag, message) => warningLogs.push(message) },
+      onCredentialsRefreshed: async () => {
+        throw sensitiveError;
+      },
+    });
+
+    assert.equal(result.response.status, 200, "persistence failure must remain non-fatal");
+    assert.deepEqual(warningLogs, [
+      "Failed to persist refreshed cookie: Cannot persist '<path>' access_token=[REDACTED]",
+    ]);
+    assert.doesNotMatch(warningLogs.join("\n"), /\/home\/alice|My Project|sk-super-secret/);
+  } finally {
+    m.restore();
+  }
+});
+
 // ─── Sentinel + PoW ─────────────────────────────────────────────────────────
 
 test("Sentinel: chat-requirements is hit before /backend-api/conversation", async () => {
@@ -742,6 +871,258 @@ test("Streaming: produces valid SSE chunks ending with [DONE]", async () => {
   }
 });
 
+test("Streaming: reader errors sanitize the public SSE delta", async () => {
+  reset();
+  const secret = "sk-stream-secret";
+  const m = installMockFetch({
+    conv: {
+      status: 200,
+      streamError: new Error(
+        "read failed /srv/private/key.pem access_token=" + secret + "\n    at /srv/stack.ts:1"
+      ),
+    },
+  });
+  try {
+    const executor = new ChatGptWebExecutor();
+    const result = await executor.execute({
+      model: "gpt-5.5",
+      body: { messages: [{ role: "user", content: "hi" }], stream: true },
+      stream: true,
+      credentials: { apiKey: "test" },
+      signal: AbortSignal.timeout(10_000),
+      log: null,
+    });
+
+    assert.equal(result.response.status, 200);
+    const text = await result.response.text();
+    assert.match(text, /\[Stream error: read failed <path>\]/);
+    assert.ok(!text.includes("/srv/private/key.pem"));
+    assert.ok(!text.includes(secret));
+    assert.ok(!text.includes("stack.ts"));
+    assert.match(text, /data: \[DONE\]/);
+  } finally {
+    m.restore();
+  }
+});
+
+test("Stack-only stream and fetch failures use a stable public fallback", async () => {
+  reset();
+  let m = installMockFetch({
+    conv: {
+      status: 200,
+      streamError: new Error("\n    at /srv/private/stack-only-stream.ts:1"),
+    },
+  });
+  try {
+    const executor = new ChatGptWebExecutor();
+    const result = await executor.execute({
+      model: "gpt-5.5",
+      body: { messages: [{ role: "user", content: "hi" }], stream: true },
+      stream: true,
+      credentials: { apiKey: "stack-only-stream" },
+      signal: AbortSignal.timeout(10_000),
+      log: null,
+    });
+    const text = await result.response.text();
+    assert.match(text, /\[Stream error: upstream error unavailable\]/);
+    assert.doesNotMatch(text, /\/srv\/private|stack-only-stream\.ts/);
+  } finally {
+    m.restore();
+  }
+
+  reset();
+  m = installMockFetch({
+    conv: {
+      status: 0,
+      requestError: new Error("\n    at /srv/private/stack-only-fetch.ts:1"),
+    },
+  });
+  const errors: string[] = [];
+  try {
+    const executor = new ChatGptWebExecutor();
+    const result = await executor.execute({
+      model: "gpt-5.5",
+      body: { messages: [{ role: "user", content: "hi" }] },
+      stream: false,
+      credentials: { apiKey: "stack-only-fetch" },
+      signal: AbortSignal.timeout(10_000),
+      log: { error: (_tag, message) => errors.push(message) },
+    });
+    assert.equal(result.response.status, 502);
+    const body = await result.response.json();
+    assert.equal(body.error.message, "ChatGPT connection failed: upstream error unavailable");
+    assert.deepEqual(errors, ["Fetch failed: upstream error unavailable"]);
+    assert.doesNotMatch(
+      JSON.stringify(body) + errors.join("\n"),
+      /\/srv\/private|stack-only-fetch\.ts/
+    );
+  } finally {
+    m.restore();
+  }
+});
+
+test("Streaming: upstream error chunks sanitize the public SSE delta", async () => {
+  reset();
+  const secret = "sk-upstream-stream-secret";
+  const m = installMockFetch({
+    conv: {
+      status: 200,
+      events: [
+        {
+          error:
+            "upstream failed /srv/private/key.pem access_token=" +
+            secret +
+            "\n    at /srv/stack.ts:1",
+        },
+      ],
+    },
+  });
+  try {
+    const executor = new ChatGptWebExecutor();
+    const result = await executor.execute({
+      model: "gpt-5.5",
+      body: { messages: [{ role: "user", content: "hi" }], stream: true },
+      stream: true,
+      credentials: { apiKey: "test" },
+      signal: AbortSignal.timeout(10_000),
+      log: null,
+    });
+
+    assert.equal(result.response.status, 200);
+    const text = await result.response.text();
+    assert.match(text, /\[Error: upstream failed <path>\]/);
+    assert.ok(!text.includes("/srv/private/key.pem"));
+    assert.ok(!text.includes(secret));
+    assert.ok(!text.includes("stack.ts"));
+  } finally {
+    m.restore();
+  }
+});
+
+test("Non-streaming: upstream error chunks sanitize the public JSON error", async () => {
+  reset();
+  const secret = "sk-upstream-json-secret";
+  const m = installMockFetch({
+    conv: {
+      status: 200,
+      events: [
+        {
+          error:
+            "upstream failed /srv/private/key.pem access_token=" +
+            secret +
+            "\n    at /srv/stack.ts:1",
+        },
+      ],
+    },
+  });
+  try {
+    const executor = new ChatGptWebExecutor();
+    const result = await executor.execute({
+      model: "gpt-5.5",
+      body: { messages: [{ role: "user", content: "hi" }] },
+      stream: false,
+      credentials: { apiKey: "test" },
+      signal: AbortSignal.timeout(10_000),
+      log: null,
+    });
+
+    assert.equal(result.response.status, 502);
+    const body = await result.response.json();
+    assert.equal(body.error.message, "upstream failed <path>");
+    assert.ok(!JSON.stringify(body).includes("/srv/private/key.pem"));
+    assert.ok(!JSON.stringify(body).includes(secret));
+    assert.ok(!JSON.stringify(body).includes("stack.ts"));
+  } finally {
+    m.restore();
+  }
+});
+
+test("Upstream error chunks use the stable fallback after sanitization", async () => {
+  for (const stream of [true, false]) {
+    reset();
+    const m = installMockFetch({
+      conv: {
+        status: 200,
+        events: [{ error: "  \n    at /srv/private/chunk-stack-only.ts:1" }],
+      },
+    });
+    try {
+      const executor = new ChatGptWebExecutor();
+      const result = await executor.execute({
+        model: "gpt-5.5",
+        body: { messages: [{ role: "user", content: "hi" }], stream },
+        stream,
+        credentials: { apiKey: `chunk-fallback-${stream}` },
+        signal: AbortSignal.timeout(10_000),
+        log: null,
+      });
+
+      if (stream) {
+        assert.equal(result.response.status, 200);
+        const text = await result.response.text();
+        assert.match(text, /\[Error: upstream error unavailable\]/);
+        assert.doesNotMatch(text, /chunk-stack-only|\/srv\/private/);
+      } else {
+        assert.equal(result.response.status, 502);
+        const body = await result.response.json();
+        assert.deepEqual(body.error, {
+          message: "upstream error unavailable",
+          type: "upstream_error",
+          code: "CHATGPT_ERROR",
+        });
+      }
+    } finally {
+      m.restore();
+    }
+  }
+});
+
+for (const stream of [true, false]) {
+  test(`Upstream error chunks remove boundaryless URLs from ${stream ? "SSE" : "JSON"}`, async () => {
+    reset();
+    const m = installMockFetch({
+      conv: {
+        status: 200,
+        events: [
+          {
+            error:
+              "upstream download_url_https://files.oaiusercontent.com/private/item" +
+              "?sig=OPAQUE-CHUNK-URL",
+          },
+        ],
+      },
+    });
+    try {
+      const executor = new ChatGptWebExecutor();
+      const result = await executor.execute({
+        model: "gpt-5.5",
+        body: { messages: [{ role: "user", content: "hi" }], stream },
+        stream,
+        credentials: { apiKey: `chunk-url-${stream}` },
+        signal: AbortSignal.timeout(10_000),
+        log: null,
+      });
+
+      if (stream) {
+        assert.equal(result.response.status, 200);
+        const text = await result.response.text();
+        assert.match(text, /\[Error: upstream download_url_<url>\]/);
+        assert.doesNotMatch(text, /files\.oaiusercontent\.com|OPAQUE-CHUNK/);
+      } else {
+        assert.equal(result.response.status, 502);
+        const body = await result.response.json();
+        assert.deepEqual(body.error, {
+          message: "upstream download_url_<url>",
+          type: "upstream_error",
+          code: "CHATGPT_ERROR",
+        });
+      }
+    } finally {
+      m.restore();
+    }
+  });
+}
+
 test("Streaming: cumulative parts are diffed into non-overlapping deltas", async () => {
   reset();
   const m = installMockFetch({
@@ -933,6 +1314,290 @@ test("Error: 403 from sentinel returns 403 SENTINEL_BLOCKED", async () => {
     const json = await result.response.json();
     assert.equal(json.error.code, "SENTINEL_BLOCKED");
     assert.equal(m.calls.conv, 0);
+  } finally {
+    m.restore();
+  }
+});
+
+test("Error: session and sentinel failures sanitize error logs", async () => {
+  const sensitiveError = new Error(
+    "Cannot load '/home/alice/My Project/private/secret.pem' access_token=sk-super-secret"
+  );
+  const cases = [
+    {
+      options: { session: { status: 0, error: sensitiveError } },
+      expected: "Session exchange failed: Cannot load '<path>' access_token=[REDACTED]",
+    },
+    {
+      options: { sentinel: { status: 0, error: sensitiveError } },
+      expected: "Sentinel failed: Cannot load '<path>' access_token=[REDACTED]",
+    },
+  ];
+
+  for (const { options, expected } of cases) {
+    reset();
+    const m = installMockFetch(options);
+    const errorLogs: string[] = [];
+    try {
+      const executor = new ChatGptWebExecutor();
+      const result = await executor.execute({
+        model: "gpt-5.5",
+        body: { messages: [{ role: "user", content: "hi" }] },
+        stream: false,
+        credentials: { apiKey: "test" },
+        signal: AbortSignal.timeout(10_000),
+        log: { error: (_tag, message) => errorLogs.push(message) },
+      });
+      assert.equal(result.response.status, 502);
+      assert.deepEqual(errorLogs, [expected]);
+      assert.doesNotMatch(errorLogs.join("\n"), /\/home\/alice|My Project|sk-super-secret/);
+    } finally {
+      m.restore();
+    }
+  }
+});
+
+test("Error: hostile session and sentinel prototypes degrade to sanitized 502s", async () => {
+  const cases = [
+    {
+      label: "session",
+      options: { session: { status: 0, error: hostilePrototypeFailure("session-proxy") } },
+      expectedMessage: "ChatGPT session exchange failed: upstream error unavailable",
+      expectedLog: "Session exchange failed: upstream error unavailable",
+    },
+    {
+      label: "sentinel",
+      options: { sentinel: { status: 0, error: hostilePrototypeFailure("sentinel-proxy") } },
+      expectedMessage: "ChatGPT sentinel failed: upstream error unavailable",
+      expectedLog: "Sentinel failed: upstream error unavailable",
+    },
+  ] as const;
+
+  for (const testCase of cases) {
+    reset();
+    const errorLogs: string[] = [];
+    const m = installMockFetch(testCase.options);
+    try {
+      const result = await new ChatGptWebExecutor().execute({
+        model: "gpt-5.5",
+        body: { messages: [{ role: "user", content: "hi" }] },
+        stream: false,
+        credentials: { apiKey: "test" },
+        signal: AbortSignal.timeout(10_000),
+        log: { error: (_tag, message) => errorLogs.push(message) },
+      });
+
+      assert.equal(result.response.status, 502, testCase.label);
+      const responseText = await result.response.text();
+      assert.equal(JSON.parse(responseText).error.message, testCase.expectedMessage);
+      assert.deepEqual(errorLogs, [testCase.expectedLog]);
+      assert.doesNotMatch(
+        responseText + errorLogs.join("\n"),
+        /session-proxy|sentinel-proxy|prototype-secret|coercion-secret|\/srv\/private/
+      );
+    } finally {
+      m.restore();
+    }
+  }
+});
+
+test("Error: DPL fallback warning sanitizes details and request continues", async () => {
+  reset();
+  const sensitiveError = new Error(
+    "Cannot load '/home/alice/My Project/private/dpl.pem' access_token=sk-super-secret"
+  );
+  const m = installMockFetch({ dpl: { status: 0, error: sensitiveError } });
+  const warningLogs: string[] = [];
+  try {
+    const executor = new ChatGptWebExecutor();
+    const result = await executor.execute({
+      model: "gpt-5.5",
+      body: { messages: [{ role: "user", content: "hi" }] },
+      stream: false,
+      credentials: { apiKey: "dpl-warning-cookie" },
+      signal: AbortSignal.timeout(10_000),
+      log: { warn: (_tag, message) => warningLogs.push(message) },
+    });
+
+    assert.equal(result.response.status, 200, "DPL fallback must remain non-fatal");
+    assert.deepEqual(warningLogs, [
+      "DPL warmup failed (continuing with fallback): Cannot load '<path>' access_token=[REDACTED]",
+    ]);
+    assert.doesNotMatch(warningLogs.join("\n"), /\/home\/alice|My Project|sk-super-secret/);
+  } finally {
+    m.restore();
+  }
+});
+
+test("Error: browser warmup debug logs sanitize external failures", async () => {
+  const cases = [
+    {
+      error: new Error(
+        "Cannot open '/srv/private/warmup.sock' access_token=sk-warmup-secret\n" +
+          "    at /srv/private/warmup.ts:1"
+      ),
+      detail: "Cannot open '<path>' access_token=[REDACTED]",
+    },
+    {
+      error: new Error("\n    at /srv/private/warmup.ts:2"),
+      detail: "upstream error unavailable",
+    },
+  ];
+
+  for (const [index, { error, detail }] of cases.entries()) {
+    reset();
+    const m = installMockFetch({ warmup: { status: 0, error } });
+    const debugLogs: string[] = [];
+    try {
+      const executor = new ChatGptWebExecutor();
+      const result = await executor.execute({
+        model: "gpt-5.5",
+        body: { messages: [{ role: "user", content: "hi" }] },
+        stream: false,
+        credentials: { apiKey: `warmup-log-cookie-${index}` },
+        signal: AbortSignal.timeout(10_000),
+        log: { debug: (_tag, message) => debugLogs.push(message) },
+      });
+
+      assert.equal(result.response.status, 200, "warmup failure must remain non-fatal");
+      assert.equal(m.calls.warmup, 3);
+      assert.equal(debugLogs.filter((message) => message.includes("warmup ")).length, 3);
+      assert.ok(
+        debugLogs.every((message) => !message.includes("warmup ") || message.endsWith(detail))
+      );
+      assert.doesNotMatch(debugLogs.join("\n"), /\/srv\/private|sk-warmup|warmup\.ts/);
+    } finally {
+      m.restore();
+    }
+  }
+});
+
+test("Error: conversation poll logs sanitize response bodies and transport failures", async () => {
+  const secretBody = "access_token=sk-conversation-body /srv/private/poll-body.json";
+  const cases = [
+    {
+      detail: { status: 403, body: secretBody },
+      expected: "conversation poll 403: [REDACTED_DATA_URL]",
+    },
+    {
+      detail: [
+        {
+          status: 0,
+          error: new Error(
+            "Cannot poll '/srv/private/poll.sock' access_token=sk-conversation-error\n" +
+              "    at /srv/private/poll.ts:1"
+          ),
+        },
+        { status: 404, body: "stop" },
+      ],
+      expected: "conversation poll failed: Cannot poll '<path>' access_token=[REDACTED]",
+    },
+  ];
+
+  for (const [index, { detail, expected }] of cases.entries()) {
+    reset();
+    const conversationId = `conv-poll-opaque-01J9YQ8Z4K7M6N5P3R2T-${index}`;
+    const m = installMockFetch({
+      conv: {
+        status: 200,
+        events: [
+          {
+            conversation_id: conversationId,
+            message: {
+              id: `progress-${index}`,
+              author: { role: "assistant" },
+              content: { content_type: "text", parts: ["working"] },
+              status: "in_progress",
+            },
+          },
+          { __event: "stream_handoff", conversation_id: conversationId },
+        ],
+      },
+      conversationDetail: detail,
+    });
+    const warnings: string[] = [];
+    try {
+      await withEnv(
+        {
+          OMNIROUTE_CGPT_WEB_PRO_TIMEOUT_MS: "100",
+          OMNIROUTE_CGPT_WEB_PRO_POLL_INTERVAL_MS: "1",
+        },
+        async () => {
+          const executor = new ChatGptWebExecutor();
+          const result = await executor.execute({
+            model: "gpt-5.6-sol-pro",
+            body: { messages: [{ role: "user", content: "hard problem" }] },
+            stream: false,
+            credentials: { apiKey: `poll-log-cookie-${index}` },
+            signal: AbortSignal.timeout(10_000),
+            log: { warn: (_tag, message) => warnings.push(message) },
+          });
+          assert.equal(result.response.status, 200);
+        }
+      );
+
+      assert.ok(warnings.includes(expected), `missing sanitized log: ${expected}`);
+      assert.doesNotMatch(
+        warnings.join("\n"),
+        /\/srv\/private|sk-conversation|poll\.ts|c2stY29udmVyc2F0aW9u|conv-poll-opaque/,
+        "conversation polling must not expose raw or base64-encoded upstream secrets"
+      );
+    } finally {
+      m.restore();
+    }
+  }
+});
+
+test("Error: upstream error-body warning sanitizes details", async () => {
+  reset();
+  const sensitiveMessage =
+    "Cannot load download_url_https://files.oaiusercontent.com/private/item?sig=OPAQUE-SIGNED-URL-123 " +
+    "and '/home/alice/My Project/private/upstream.pem' access_token=sk-super-secret";
+  const m = installMockFetch({ conv: { status: 500, error: sensitiveMessage } });
+  const warningLogs: string[] = [];
+  try {
+    const executor = new ChatGptWebExecutor();
+    const result = await executor.execute({
+      model: "gpt-5.5",
+      body: { messages: [{ role: "user", content: "hi" }] },
+      stream: false,
+      credentials: { apiKey: "upstream-warning-cookie" },
+      signal: AbortSignal.timeout(10_000),
+      log: { warn: (_tag, message) => warningLogs.push(message) },
+    });
+
+    assert.equal(result.response.status, 500);
+    assert.match(
+      warningLogs[0],
+      /conv 500: .*download_url_<url>.*<path>.*access_token=\[REDACTED\]/
+    );
+    assert.doesNotMatch(
+      warningLogs.join("\n"),
+      /\/home\/alice|My Project|sk-super-secret|files\.oaiusercontent\.com|OPAQUE-SIGNED/
+    );
+  } finally {
+    m.restore();
+  }
+});
+
+test("Error: upstream log details are bounded", async () => {
+  reset();
+  const m = installMockFetch({ conv: { status: 500, error: "x".repeat(1_000) } });
+  const warningLogs: string[] = [];
+  try {
+    const executor = new ChatGptWebExecutor();
+    const result = await executor.execute({
+      model: "gpt-5.5",
+      body: { messages: [{ role: "user", content: "hi" }] },
+      stream: false,
+      credentials: { apiKey: "bounded-upstream-warning" },
+      signal: AbortSignal.timeout(10_000),
+      log: { warn: (_tag, message) => warningLogs.push(message) },
+    });
+
+    assert.equal(result.response.status, 500);
+    assert.ok(warningLogs[0].startsWith("conv 500: "));
+    assert.ok(warningLogs[0].length <= "conv 500: ".length + 300);
   } finally {
     m.restore();
   }
@@ -1817,6 +2482,7 @@ test("Error: TlsClientUnavailableError returns 502 with TLS_UNAVAILABLE code", a
   // the error and surfaces TLS_UNAVAILABLE so operators can identify missing
   // native binary issues quickly.
   let convAttempted = false;
+  const errorLogs: string[] = [];
   __setTlsFetchOverrideForTesting(async (url) => {
     if (url === "https://chatgpt.com/" || url === "https://chatgpt.com") {
       return {
@@ -1848,7 +2514,12 @@ test("Error: TlsClientUnavailableError returns 502 with TLS_UNAVAILABLE code", a
     }
     if (url.endsWith("/backend-api/f/conversation")) {
       convAttempted = true;
-      throw new TlsClientUnavailableError("native binary not loaded");
+      throw new TlsClientUnavailableError(
+        "Cannot find module '/home/alice/My Project/tls-client-node/linux-x64/tls-client.node' " +
+          "access_token=sk-super-secret\n" +
+          "Require stack:\n" +
+          "- /home/alice/omniroute/open-sse/services/tlsClientBase.ts:598:17"
+      );
     }
     return {
       status: 200,
@@ -1865,14 +2536,62 @@ test("Error: TlsClientUnavailableError returns 502 with TLS_UNAVAILABLE code", a
       stream: false,
       credentials: { apiKey: "test" },
       signal: AbortSignal.timeout(10_000),
-      log: null,
+      log: { error: (_tag, message) => errorLogs.push(message) },
     });
     assert.ok(convAttempted);
     assert.equal(result.response.status, 502);
     const json = await result.response.json();
     assert.equal(json.error.code, "TLS_UNAVAILABLE");
+    assert.equal(
+      json.error.message,
+      "ChatGPT connection failed: Cannot find module '<path>' access_token=[REDACTED]",
+      "the 502 message must retain useful context while redacting the path and token"
+    );
+    assert.doesNotMatch(
+      json.error.message,
+      /\/home\/alice|My Project|tls-client\.node|sk-super-secret|Require stack|tlsClientBase\.ts/
+    );
+    assert.deepEqual(errorLogs, [
+      "Fetch failed: Cannot find module '<path>' access_token=[REDACTED]",
+    ]);
+    assert.doesNotMatch(
+      errorLogs.join("\n"),
+      /\/home\/alice|My Project|tls-client\.node|sk-super-secret|Require stack|tlsClientBase\.ts/
+    );
   } finally {
     __setTlsFetchOverrideForTesting(null);
+  }
+});
+
+test("Error: hostile prototype rejection returns a sanitized 502", async () => {
+  reset();
+  const hostileFailure = hostilePrototypeFailure("conversation-proxy");
+  const errorLogs: string[] = [];
+  const m = installMockFetch({ conv: { status: 0, requestError: hostileFailure } });
+
+  try {
+    const result = await new ChatGptWebExecutor().execute({
+      model: "gpt-5.5",
+      body: { messages: [{ role: "user", content: "hi" }] },
+      stream: false,
+      credentials: { apiKey: "test" },
+      signal: AbortSignal.timeout(10_000),
+      log: { error: (_tag, message) => errorLogs.push(message) },
+    });
+
+    assert.equal(result.response.status, 502);
+    const responseText = await result.response.text();
+    assert.deepEqual(JSON.parse(responseText).error, {
+      message: "ChatGPT connection failed: upstream error unavailable",
+      type: "upstream_error",
+    });
+    assert.deepEqual(errorLogs, ["Fetch failed: upstream error unavailable"]);
+    assert.doesNotMatch(
+      responseText + errorLogs.join("\n"),
+      /prototype-secret|coercion-secret|\/srv\/private/
+    );
+  } finally {
+    m.restore();
   }
 });
 
@@ -2625,6 +3344,287 @@ test("Image gen: bytes-fetch failure drops markdown (no signed-URL fallback)", a
     assert.equal(m.calls.fileDownload, 1, "download URL was attempted");
     assert.equal(m.calls.signedDownload, 1, "signed-bytes fetch was attempted and failed");
   } finally {
+    m.restore();
+  }
+});
+
+test("Image logging sanitizes upstream pointers, response bodies, and transport errors", async () => {
+  const cases: Array<{
+    label: string;
+    pointer: string;
+    options?: MockFetchOptions;
+    expected: string;
+  }> = [
+    {
+      label: "resolver transport failure",
+      pointer: "file-service://file-access_token=sk-image-pointer",
+      options: {
+        fileDownload: {
+          status: 0,
+          error: new Error(
+            "Cannot resolve '/srv/private/image.sock' access_token=sk-image-resolver\n" +
+              "    at /srv/private/image.ts:1"
+          ),
+        },
+      },
+      expected: "Image resolve failed (file-service)",
+    },
+    {
+      label: "signed image transport failure",
+      pointer: "file-service://file-signed-error",
+      options: {
+        signedDownload: {
+          status: 0,
+          error: new Error(
+            "Cannot fetch '/srv/private/image.bin' access_token=sk-image-fetch\n" +
+              "    at /srv/private/image.ts:2"
+          ),
+        },
+      },
+      expected: "Image fetch failed: Cannot fetch '<path>' access_token=[REDACTED]",
+    },
+    {
+      label: "signed image error body",
+      pointer: "file-service://file-signed-body",
+      options: {
+        signedDownload: {
+          status: 502,
+          body:
+            "Cannot fetch '/srv/private/image-body.bin' access_token=sk-image-body\n" +
+            "    at /srv/private/image.ts:3",
+        },
+      },
+      expected: "Image fetch returned HTTP 502 (Cannot fetch '<path>' access_token=[REDACTED])",
+    },
+    {
+      label: "download endpoint",
+      pointer: "file-service://file-access_token=sk-image-endpoint",
+      options: {
+        fileDownload: { status: 503, body: "unavailable" },
+        attachmentDownload: { status: 503, body: "unavailable" },
+      },
+      expected: "Image download URL fetch failed (503)",
+    },
+    {
+      label: "unknown pointer",
+      pointer: "mystery-access_token=sk-image-unknown",
+      expected: "Unknown asset_pointer scheme: unknown",
+    },
+    {
+      label: "resolved pointer debug",
+      pointer: "file-service://file-access_token=sk-image-resolved",
+      expected: "Resolved file-service asset → <url>",
+    },
+  ];
+
+  for (const [index, { label, pointer, options, expected }] of cases.entries()) {
+    reset();
+    const m = installMockFetch({
+      ...options,
+      conv: { status: 200, events: imageGenEvents({ pointer }) },
+    });
+    const logs: string[] = [];
+    try {
+      const executor = new ChatGptWebExecutor();
+      const result = await executor.execute({
+        model: "gpt-5.5",
+        body: { messages: [{ role: "user", content: "draw a private image" }] },
+        stream: false,
+        credentials: { apiKey: `image-log-cookie-${index}` },
+        signal: AbortSignal.timeout(10_000),
+        log: {
+          warn: (_tag, message) => logs.push(message),
+          debug: (_tag, message) => logs.push(message),
+        },
+      });
+
+      assert.equal(result.response.status, 200, `${label} must preserve executor behavior`);
+      assert.ok(
+        logs.some((message) => message.includes(expected)),
+        `${label} missing sanitized log ${JSON.stringify(expected)} in ${JSON.stringify(logs)}`
+      );
+      assert.doesNotMatch(
+        logs.join("\n"),
+        /\/srv\/private|sk-image-|image\.ts|files\.oaiusercontent\.com|sig=mock|\/v1\/chatgpt-web\/image/,
+        `${label} must not expose upstream paths, tokens, or stack frames`
+      );
+    } finally {
+      m.restore();
+    }
+  }
+});
+
+test("Async image logs sanitize poll and WebSocket failures", async () => {
+  const originalWebSocket = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");
+  const asyncEvents = [
+    {
+      type: "server_ste_metadata",
+      conversation_id: "conv-async-image",
+      metadata: { turn_use_case: "image gen" },
+    },
+    {
+      conversation_id: "conv-async-image",
+      message: {
+        id: "msg-async-image",
+        author: { role: "assistant" },
+        content: { content_type: "text", parts: ["Processing image"] },
+        status: "finished_successfully",
+      },
+    },
+  ];
+
+  const restoreWebSocket = () => {
+    if (originalWebSocket) Object.defineProperty(globalThis, "WebSocket", originalWebSocket);
+    else delete (globalThis as { WebSocket?: unknown }).WebSocket;
+  };
+
+  for (const stream of [false, true]) {
+    reset();
+    const m = installMockFetch({
+      conv: { status: 200, events: asyncEvents },
+      webSocketRegister: { status: 200, body: { websocket_url: "wss://chatgpt.test/events" } },
+    });
+    const warnings: string[] = [];
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      value: class {
+        constructor() {
+          throw new Error(
+            "Cannot connect '/srv/private/image-ws.sock' access_token=sk-image-async\n" +
+              "    at /srv/private/image-ws.ts:1"
+          );
+        }
+      },
+    });
+    try {
+      const executor = new ChatGptWebExecutor();
+      const result = await executor.execute({
+        model: "gpt-5.5",
+        body: { messages: [{ role: "user", content: "draw a queued image" }], stream },
+        stream,
+        credentials: { apiKey: `async-image-log-${stream}` },
+        signal: AbortSignal.timeout(10_000),
+        log: { warn: (_tag, message) => warnings.push(message) },
+      });
+      await result.response.text();
+
+      assert.ok(
+        warnings.includes(
+          "Async image poll failed: Cannot connect '<path>' access_token=[REDACTED]"
+        )
+      );
+      assert.doesNotMatch(warnings.join("\n"), /\/srv\/private|sk-image-async|image-ws\.ts/);
+    } finally {
+      restoreWebSocket();
+      m.restore();
+    }
+  }
+
+  const registrationCases = [
+    {
+      config: {
+        status: 0,
+        error: new Error(
+          "Cannot register '/srv/private/register.sock' access_token=sk-image-register\n" +
+            "    at /srv/private/register.ts:1"
+        ),
+      },
+      expected: "Cannot register '<path>' access_token=[REDACTED]",
+    },
+    {
+      config: {
+        status: 503,
+        body:
+          "Cannot register '/srv/private/register.json' access_token=sk-image-register-body\n" +
+          "    at /srv/private/register.ts:2",
+      },
+      expected: "Cannot register '<path>' access_token=[REDACTED]",
+    },
+  ];
+
+  for (const [index, { config, expected }] of registrationCases.entries()) {
+    reset();
+    const controller = new AbortController();
+    const m = installMockFetch({
+      conv: { status: 200, events: asyncEvents },
+      webSocketRegister: config,
+      onWebSocketRegister: (_opts, call) => {
+        if (call === 4) controller.abort();
+      },
+    });
+    const warnings: string[] = [];
+    try {
+      const executor = new ChatGptWebExecutor();
+      const result = await executor.execute({
+        model: "gpt-5.5",
+        body: { messages: [{ role: "user", content: "draw a queued image" }] },
+        stream: false,
+        credentials: { apiKey: `register-log-${index}` },
+        signal: controller.signal,
+        log: { warn: (_tag, message) => warnings.push(message) },
+      });
+      await result.response.text();
+
+      assert.ok(warnings.some((message) => message.includes(expected)));
+      assert.doesNotMatch(
+        warnings.join("\n"),
+        /\/srv\/private|sk-image-register|register\.ts/,
+        "registration logs must sanitize URL, response body, and transport error details"
+      );
+    } finally {
+      m.restore();
+    }
+  }
+
+  reset();
+  const controller = new AbortController();
+  let sockets = 0;
+  const m = installMockFetch({
+    conv: { status: 200, events: asyncEvents },
+    webSocketRegister: { status: 200, body: { websocket_url: "wss://chatgpt.test/events" } },
+  });
+  const warnings: string[] = [];
+  Object.defineProperty(globalThis, "WebSocket", {
+    configurable: true,
+    value: class {
+      onerror: ((event: { message: string }) => void) | null = null;
+      onclose: (() => void) | null = null;
+
+      constructor() {
+        sockets++;
+        queueMicrotask(() => {
+          this.onerror?.({
+            message:
+              "Socket failed /srv/private/events.sock access_token=sk-image-event\n" +
+              "    at /srv/private/events.ts:1",
+          });
+          if (sockets === 2) controller.abort();
+          this.onclose?.();
+        });
+      }
+
+      close() {}
+    },
+  });
+  try {
+    const executor = new ChatGptWebExecutor();
+    const result = await executor.execute({
+      model: "gpt-5.5",
+      body: { messages: [{ role: "user", content: "draw a queued image" }] },
+      stream: false,
+      credentials: { apiKey: "websocket-event-log" },
+      signal: controller.signal,
+      log: { warn: (_tag, message) => warnings.push(message) },
+    });
+    await result.response.text();
+
+    assert.ok(
+      warnings.includes("WebSocket error: Socket failed <path>"),
+      `missing sanitized WebSocket event log in ${JSON.stringify(warnings)}`
+    );
+    assert.doesNotMatch(warnings.join("\n"), /\/srv\/private|sk-image-event|events\.ts/);
+  } finally {
+    restoreWebSocket();
     m.restore();
   }
 });

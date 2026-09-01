@@ -5,6 +5,7 @@ import type { TlsFetchOptions } from "../../open-sse/services/chatgptTlsClient.t
 
 const { ChatGptWebExecutor, __resetChatGptWebCachesForTesting } =
   await import("../../open-sse/executors/chatgpt-web.ts");
+const { resumeChatGptHandoff } = await import("../../open-sse/executors/chatgpt-web/handoff.ts");
 const { __setTlsFetchOverrideForTesting } =
   await import("../../open-sse/services/chatgptTlsClient.ts");
 
@@ -256,5 +257,103 @@ test("ChatGPT Web streaming appends the native resumed Pro answer", async () => 
     assert.equal(mock.calls.conversationDetail, 0);
   } finally {
     mock.restore();
+  }
+});
+
+test("ChatGPT Web handoff logs sanitize upstream response and transport details", async () => {
+  const cases = [
+    {
+      label: "response body",
+      run: async () => ({
+        status: 502,
+        headers: makeHeaders({ "Content-Type": "text/plain" }),
+        text:
+          "Cannot read download_url_https://files.oaiusercontent.com/private?sig=OPAQUE-HANDOFF-URL " +
+          "and '/srv/private/handoff.pem' access_token=sk-handoff-body\n" +
+          "    at /srv/private/handoff.ts:1",
+        body: null,
+      }),
+      expected:
+        "conversation resume 502: Cannot read download_url_<url> and '<path>' access_token=[REDACTED]",
+    },
+    {
+      label: "transport error",
+      run: async () => {
+        throw new Error(
+          "Cannot open '/srv/private/handoff.sock' access_token=sk-handoff-error\n" +
+            "    at /srv/private/handoff.ts:2"
+        );
+      },
+      expected: "conversation resume failed: Cannot open '<path>' access_token=[REDACTED]",
+    },
+    {
+      label: "stack-only transport error",
+      run: async () => {
+        throw new Error("\n    at /srv/private/handoff.ts:3");
+      },
+      expected: "conversation resume failed: upstream error unavailable",
+    },
+    {
+      label: "hostile prototype transport error",
+      run: async () => {
+        throw new Proxy(
+          {},
+          {
+            getPrototypeOf() {
+              throw new Error(
+                "access_token=handoff-prototype-secret at /srv/private/handoff-prototype.ts:1:2"
+              );
+            },
+            get(_target, property) {
+              if (property === "toString") {
+                return () => {
+                  throw new Error(
+                    "access_token=handoff-coercion-secret at /srv/private/handoff-coercion.ts:1:2"
+                  );
+                };
+              }
+              return undefined;
+            },
+          }
+        );
+      },
+      expected: "conversation resume failed: upstream error unavailable",
+    },
+    {
+      label: "conversation id",
+      conversationId: "conversation-opaque-01J9YQ8Z4K7M6N5P3R2T",
+      run: async () => ({
+        status: 404,
+        headers: makeHeaders({ "Content-Type": "text/plain" }),
+        text: "not ready",
+        body: null,
+      }),
+      expected: "conversation resume returned no assistant text for <id>",
+    },
+  ];
+
+  for (const { label, conversationId, run, expected } of cases) {
+    const warnings: string[] = [];
+    __setTlsFetchOverrideForTesting(run);
+    try {
+      const answer = await resumeChatGptHandoff({
+        conversationId: conversationId ?? `conversation-${label}`,
+        resumeToken: "resume-token",
+        headers: {},
+        timeoutMs: 1_000,
+        log: { warn: (_tag, message) => warnings.push(message) },
+        readContent: async function* () {},
+      });
+
+      assert.equal(answer, null);
+      assert.deepEqual(warnings, [expected]);
+      assert.doesNotMatch(
+        warnings.join("\n"),
+        /\/srv\/private|sk-handoff|handoff(?:-prototype|-coercion)?\.ts|handoff-(?:prototype|coercion)-secret|conversation-opaque|files\.oaiusercontent|OPAQUE-HANDOFF/,
+        `${label} must not expose upstream paths, tokens, or stack frames`
+      );
+    } finally {
+      __setTlsFetchOverrideForTesting(null);
+    }
   }
 });

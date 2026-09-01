@@ -65,6 +65,34 @@ test("redacts web-impersonation body credentials but preserves non-secret 'capab
   });
 });
 
+test("redacts challenge and handoff credentials from provider request log payloads", () => {
+  const protectedPayload = protectPipelinePayloads({
+    providerRequest: {
+      model: "arena-model",
+      recaptchaV3Token: "recaptcha-secret",
+      nested: {
+        recaptchaToken: "recaptcha-alias-secret",
+        turnstileToken: "turnstile-secret",
+        proofToken: "proof-secret",
+        resumeToken: "resume-secret",
+        prepare_token: "prepare-secret",
+      },
+    },
+  });
+
+  assert.deepEqual(protectedPayload?.providerRequest, {
+    model: "arena-model",
+    recaptchaV3Token: "[REDACTED]",
+    nested: {
+      recaptchaToken: "[REDACTED]",
+      turnstileToken: "[REDACTED]",
+      proofToken: "[REDACTED]",
+      resumeToken: "[REDACTED]",
+      prepare_token: "[REDACTED]",
+    },
+  });
+});
+
 test("omits encrypted reasoning values from structured log payloads", () => {
   const encryptedContent = "encrypted".repeat(128);
   const payload = {

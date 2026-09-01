@@ -16,8 +16,28 @@ const { __setTlsFetchOverrideForTesting: __setPplxTlsFetchOverride } =
 const { __setTlsFetchOverrideForTesting: __setGrokTlsFetchOverride } =
   await import("../../open-sse/services/grokTlsClient.ts");
 
-
 const originalFetch = globalThis.fetch;
+
+function hostilePrototypeFailure(label: string): unknown {
+  return new Proxy(
+    {},
+    {
+      getPrototypeOf() {
+        throw new Error(`access_token=${label}-prototype-secret at /srv/private/${label}.ts:1:2`);
+      },
+      get(_target, property) {
+        if (property === "toString") {
+          return () => {
+            throw new Error(
+              `access_token=${label}-coercion-secret at /srv/private/${label}-coercion.ts:1:2`
+            );
+          };
+        }
+        return undefined;
+      },
+    }
+  );
+}
 
 test.afterEach(() => {
   globalThis.fetch = originalFetch;
@@ -55,6 +75,88 @@ data:
 
 `;
 }
+
+test("deepseek-web validator sanitizes application error details without changing classification", async () => {
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        code: 49999,
+        msg:
+          "Temporary DeepSeek condition at /srv/private/deepseek.json " +
+          "access_token=deepseek-secret\n    at DeepSeekSecretFrame (/srv/private/deepseek.ts:1:1)",
+        data: { biz_data: null },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+
+  const result = await validateProviderApiKey({
+    provider: "deepseek-web",
+    apiKey: "synthetic-user-token",
+  });
+  const error = result.error || "";
+
+  assert.equal(result.valid, false);
+  assert.notEqual(result.unsupported, true);
+  assert.match(error, /DeepSeek did not return an access token/i);
+  assert.match(error, /Temporary DeepSeek condition/i);
+  assert.doesNotMatch(
+    error,
+    /srv\/private|deepseek-secret|deepseek\.ts|DeepSeekSecretFrame|[\r\n]/i
+  );
+
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ code: 49999, msg: "", data: { biz_data: null } }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  const emptyDetail = await validateProviderApiKey({
+    provider: "deepseek-web",
+    apiKey: "synthetic-user-token",
+  });
+  assert.match(emptyDetail.error || "", /unknown error/i);
+});
+
+test("jules validator sanitizes rejected upstream bodies and preserves its fallback", async () => {
+  globalThis.fetch = async () =>
+    new Response(
+      "Jules upstream rejected the request at /srv/private/jules.json " +
+        "api_key=jules-secret\n    at JulesSecretFrame (/srv/private/jules.ts:2:3)",
+      { status: 400 }
+    );
+
+  const result = await validateProviderApiKey({ provider: "jules", apiKey: "jules-key" });
+  const error = result.error || "";
+
+  assert.equal(result.valid, false);
+  assert.notEqual(result.unsupported, true);
+  assert.match(error, /Jules upstream rejected the request/i);
+  assert.doesNotMatch(error, /srv\/private|jules-secret|jules\.ts|JulesSecretFrame|[\r\n]/i);
+
+  globalThis.fetch = async () => new Response("", { status: 400 });
+  const emptyBody = await validateProviderApiKey({ provider: "jules", apiKey: "jules-key" });
+  assert.equal(emptyBody.error, "Jules API returned 400");
+});
+
+test("devin validator sanitizes rejected upstream bodies and preserves its fallback", async () => {
+  globalThis.fetch = async () =>
+    new Response(
+      "Devin upstream rejected the request at /srv/private/devin.json " +
+        "access_token=devin-secret\n    at DevinSecretFrame (/srv/private/devin.ts:4:5)",
+      { status: 422 }
+    );
+
+  const result = await validateProviderApiKey({ provider: "devin", apiKey: "devin-key" });
+  const error = result.error || "";
+
+  assert.equal(result.valid, false);
+  assert.notEqual(result.unsupported, true);
+  assert.match(error, /Devin upstream rejected the request/i);
+  assert.doesNotMatch(error, /srv\/private|devin-secret|devin\.ts|DevinSecretFrame|[\r\n]/i);
+
+  globalThis.fetch = async () => new Response("", { status: 422 });
+  const emptyBody = await validateProviderApiKey({ provider: "devin", apiKey: "devin-key" });
+  assert.equal(emptyBody.error, "Devin API returned 422");
+});
 
 test("Kiro API key validator resolves profiles with bearer auth", async () => {
   const calls: Array<{ url: string; headers: Record<string, string> }> = [];
@@ -180,7 +282,7 @@ test("Kiro API key validator fails as invalid instead of unsupported", async () 
 });
 
 test("specialty provider validators cover Deepgram, AssemblyAI, ElevenLabs and Inworld branches", async () => {
-  globalThis.fetch = async (url, init = {}) => {
+  globalThis.fetch = async (_url, init = {}) => {
     const target = String(url);
     const headers = init.headers || {};
 
@@ -737,6 +839,271 @@ test("grok-web validator: structured non-auth 403 (resource error) still surface
   assert.doesNotMatch(result.error || "", /residential IP|proxy/i);
 });
 
+test("grok-web validator classifies a structured 403 from the complete raw body before display capping", async () => {
+  __setGrokTlsFetchOverride(async () => {
+    return {
+      status: 403,
+      headers: new Headers(),
+      text: JSON.stringify({
+        error: { code: 7, message: "Model is not found", details: [] },
+        diagnosticPadding: "X".repeat(300),
+      }),
+      body: null,
+    };
+  });
+
+  const result = await validateProviderApiKey({ provider: "grok-web", apiKey: "good-cookie" });
+
+  assert.equal(result.valid, false);
+  assert.match(result.error || "", /Grok rejected validation \(403\)/);
+  assert.match(result.error || "", /Model is not found/);
+  assert.doesNotMatch(result.error || "", /residential IP|proxy/i);
+});
+
+test("grok-web validator keeps oversized JSON-shaped 403 details bounded without false anti-bot guidance", async () => {
+  __setGrokTlsFetchOverride(async () => {
+    return {
+      status: 403,
+      headers: new Headers(),
+      text: JSON.stringify({
+        error: { code: 7, message: "Model is not found", details: [] },
+        diagnosticPadding: "X".repeat(70_000),
+        tail: "access_token=fake-tail-secret",
+      }),
+      body: null,
+    };
+  });
+
+  const result = await validateProviderApiKey({ provider: "grok-web", apiKey: "good-cookie" });
+  const error = result.error || "";
+
+  assert.equal(result.valid, false);
+  assert.match(error, /Grok rejected validation \(403\)/);
+  assert.match(error, /Model is not found/);
+  assert.doesNotMatch(error, /residential IP|proxy|fake-tail-secret/);
+  assert.ok(error.length <= "Grok rejected validation (403): ".length + 160);
+});
+
+test("grok-web validator classifies auth details beyond the old display cap from raw input", async () => {
+  __setGrokTlsFetchOverride(async () => {
+    return {
+      status: 403,
+      headers: new Headers(),
+      text: JSON.stringify({
+        diagnosticPadding: "X".repeat(300),
+        error: { code: 16, message: "unauthorized: invalid-credentials" },
+      }),
+      body: null,
+    };
+  });
+
+  const result = await validateProviderApiKey({ provider: "grok-web", apiKey: "bad-cookie" });
+
+  assert.equal(result.valid, false);
+  assert.match(result.error || "", /Invalid SSO cookie/i);
+  assert.doesNotMatch(result.error || "", /residential IP|proxy/i);
+});
+
+test("grok-web validator sanitizes sensitive details in structured non-auth 403 errors", async () => {
+  __setGrokTlsFetchOverride(async () => {
+    return {
+      status: 403,
+      headers: new Headers(),
+      text: JSON.stringify({
+        error:
+          "/srv/private/key.pem access_token=secret\n" + "    at SecretFunction (/srv/stack.ts:1)",
+      }),
+      body: null,
+    };
+  });
+
+  const result = await validateProviderApiKey({ provider: "grok-web", apiKey: "good-cookie" });
+
+  assert.equal(result.valid, false);
+  assert.match(result.error || "", /Grok rejected validation \(403\)/);
+  assert.doesNotMatch(result.error || "", /srv\/private|access_token=secret|stack\.ts/);
+  assert.doesNotMatch(result.error || "", /SecretFunction|\\n\s+at/);
+});
+
+test("grok-web validator strips JSON-escaped stack frames from structured errors", async () => {
+  __setGrokTlsFetchOverride(async () => {
+    return {
+      status: 403,
+      headers: new Headers(),
+      text: JSON.stringify({
+        error: "Operation failed\n    at SecretFunction (/srv/private/key.pem:1)",
+        context: "access_token=secret",
+      }),
+      body: null,
+    };
+  });
+
+  const result = await validateProviderApiKey({ provider: "grok-web", apiKey: "good-cookie" });
+
+  assert.equal(result.valid, false);
+  assert.match(result.error || "", /Grok rejected validation \(403\)/);
+  assert.match(result.error || "", /Operation failed/);
+  assert.doesNotMatch(
+    result.error || "",
+    /srv\/private|access_token=secret|key\.pem|SecretFunction|\\n\s+at/
+  );
+});
+
+test("grok-web validator strips double-escaped stack frames from structured errors", async () => {
+  __setGrokTlsFetchOverride(async () => {
+    return {
+      status: 403,
+      headers: new Headers(),
+      text: JSON.stringify({
+        error: "Operation failed\\n    at DoubleEscapedFrame (/srv/private/key.pem:1)",
+      }),
+      body: null,
+    };
+  });
+
+  const result = await validateProviderApiKey({ provider: "grok-web", apiKey: "good-cookie" });
+
+  assert.equal(result.valid, false);
+  assert.match(result.error || "", /Grok rejected validation \(403\)/);
+  assert.match(result.error || "", /Operation failed/);
+  assert.doesNotMatch(result.error || "", /DoubleEscapedFrame|\\n\s+at|srv\/private|key\.pem/);
+});
+
+test("grok-web validator strips double-escaped Unicode stack separators", async () => {
+  __setGrokTlsFetchOverride(async () => {
+    return {
+      status: 400,
+      headers: new Headers(),
+      text: JSON.stringify({
+        error: "Operation failed\\u000a    at UnicodeEscapedFrame (/srv/private/key.pem:1)",
+      }),
+      body: null,
+    };
+  });
+
+  const result = await validateProviderApiKey({ provider: "grok-web", apiKey: "good-cookie" });
+
+  assert.equal(result.valid, false);
+  assert.match(result.error || "", /Grok validation failed \(400\)/);
+  assert.match(result.error || "", /Operation failed/);
+  assert.doesNotMatch(result.error || "", /UnicodeEscapedFrame|\\u000a\s+at|srv\/private/);
+});
+
+test("grok-web validator strips decoded Unicode line-separator stack frames", async () => {
+  __setGrokTlsFetchOverride(async () => {
+    return {
+      status: 400,
+      headers: new Headers(),
+      text: JSON.stringify({
+        error: "Operation failed\u2028    at LineSeparatorFrame (/srv/private/key.pem:1)",
+      }),
+      body: null,
+    };
+  });
+
+  const result = await validateProviderApiKey({ provider: "grok-web", apiKey: "good-cookie" });
+
+  assert.equal(result.valid, false);
+  assert.match(result.error || "", /Grok validation failed \(400\)/);
+  assert.match(result.error || "", /Operation failed/);
+  assert.doesNotMatch(result.error || "", /LineSeparatorFrame|srv\/private/);
+});
+
+test("grok-web validator strips double-escaped paths, credentials and credential keys", async () => {
+  const encodedCredentialKey =
+    "\\u0061\\u0063\\u0063\\u0065\\u0073\\u0073\\u005f\\u0074\\u006f\\u006b\\u0065\\u006e";
+  __setGrokTlsFetchOverride(async () => {
+    return {
+      status: 400,
+      headers: new Headers(),
+      text: JSON.stringify({
+        error:
+          "Operation failed at \\u002fsrv\\u002fprivate\\u002fkey.pem " +
+          "access\\u005ftoken\\u003dfake-double-secret",
+        [encodedCredentialKey]: "fake-opaque-credential",
+      }),
+      body: null,
+    };
+  });
+
+  const result = await validateProviderApiKey({ provider: "grok-web", apiKey: "good-cookie" });
+
+  assert.equal(result.valid, false);
+  assert.match(result.error || "", /Grok validation failed \(400\)/);
+  assert.match(result.error || "", /Operation failed/);
+  assert.doesNotMatch(
+    result.error || "",
+    /srv|private|key\.pem|fake-double-secret|fake-opaque-credential|\\u00(?:2f|3d|5f)/i
+  );
+});
+
+test("grok-web validator sanitizes structured 403 details before applying the length cap", async () => {
+  __setGrokTlsFetchOverride(async () => {
+    return {
+      status: 403,
+      headers: new Headers(),
+      text: JSON.stringify({
+        error: `${"A".repeat(120)}\n` + "    at SecretFunction (/srv/private/key.pem:1)",
+        context: "access_token=secret",
+      }),
+      body: null,
+    };
+  });
+
+  const result = await validateProviderApiKey({ provider: "grok-web", apiKey: "good-cookie" });
+
+  assert.equal(result.valid, false);
+  assert.match(result.error || "", /Grok rejected validation \(403\)/);
+  assert.doesNotMatch(result.error || "", /SecretFunction|\\n\s+at|srv\/private|key\.pem/);
+});
+
+test("grok-web validator strips escaped stack frames from capped generic JSON", async () => {
+  __setGrokTlsFetchOverride(async () => {
+    return {
+      status: 400,
+      headers: new Headers(),
+      text: JSON.stringify({
+        error: "Operation failed\n    at SecretFunction (/srv/private/key.pem:1)",
+        padding: "X".repeat(300),
+        context: "access_token=secret",
+      }),
+      body: null,
+    };
+  });
+
+  const result = await validateProviderApiKey({ provider: "grok-web", apiKey: "good-cookie" });
+
+  assert.equal(result.valid, false);
+  assert.match(result.error || "", /Grok validation failed \(400\)/);
+  assert.match(result.error || "", /Operation failed/);
+  assert.doesNotMatch(result.error || "", /SecretFunction|\\n\s+at|srv\/private|key\.pem/);
+  assert.ok((result.error || "").length <= "Grok validation failed (400): ".length + 240);
+});
+
+test("grok-web validator sanitizes sensitive details in other upstream errors", async () => {
+  __setGrokTlsFetchOverride(async () => {
+    return {
+      status: 400,
+      headers: new Headers(),
+      text: JSON.stringify({
+        error: "Operation failed\n    at SecretFunction (/srv/private/key.pem:1)",
+        context: "access_token=secret",
+      }),
+      body: null,
+    };
+  });
+
+  const result = await validateProviderApiKey({ provider: "grok-web", apiKey: "good-cookie" });
+
+  assert.equal(result.valid, false);
+  assert.match(result.error || "", /Grok validation failed \(400\)/);
+  assert.match(result.error || "", /Operation failed/);
+  assert.doesNotMatch(
+    result.error || "",
+    /srv\/private|access_token=secret|key\.pem|SecretFunction|\\n\s+at/
+  );
+});
+
 test("grok-web validator: auth-shaped 401 keeps the re-paste/re-authenticate guidance (no regression) (#3474)", async () => {
   __setGrokTlsFetchOverride(async () => {
     return { status: 401, headers: new Headers(), text: "Unauthorized", body: null };
@@ -811,13 +1178,65 @@ test("grok-web validator: invalid-credentials 403 WITH a cf_clearance maps to IP
 test("grok-web validator: TLS client unavailable surfaces actionable error", async () => {
   __setGrokTlsFetchOverride(async () => {
     const { TlsClientUnavailableError } = await import("../../open-sse/services/grokTlsClient.ts");
-    throw new TlsClientUnavailableError("native binary not found");
+    throw new TlsClientUnavailableError(
+      "native binary not found at /srv/private/grok api_key=sk-grok-secret\n at /srv/stack.ts:1"
+    );
   });
 
   const result = await validateProviderApiKey({ provider: "grok-web", apiKey: "sso=abc" });
   assert.equal(result.valid, false);
   assert.match(result.error || "", /TLS impersonation client unavailable/i);
   assert.match(result.error || "", /native binary not found/i);
+  assert.doesNotMatch(result.error || "", /srv\/private|sk-grok-secret|stack\.ts/);
+});
+
+test("perplexity-web validator sanitizes TLS client failure details", async () => {
+  __setPplxTlsFetchOverride(async () => {
+    const { TlsClientUnavailableError } =
+      await import("../../open-sse/services/perplexityTlsClient.ts");
+    throw new TlsClientUnavailableError(
+      "native binary missing at /srv/private/pplx access_token=pplx-secret\n at /srv/stack.ts:1"
+    );
+  });
+
+  const result = await validateProviderApiKey({
+    provider: "perplexity-web",
+    apiKey: "pplx.session=valid-looking-cookie",
+  });
+  assert.equal(result.valid, false);
+  assert.match(result.error || "", /perplexity-web requires it/i);
+  assert.doesNotMatch(result.error || "", /srv\/private|pplx-secret|stack\.ts/);
+});
+
+test("grok-web and perplexity-web validators fail closed on hostile TLS prototypes", async () => {
+  const cases = [
+    {
+      provider: "grok-web",
+      apiKey: "sso=abc",
+      setOverride: __setGrokTlsFetchOverride,
+    },
+    {
+      provider: "perplexity-web",
+      apiKey: "pplx.session=valid-looking-cookie",
+      setOverride: __setPplxTlsFetchOverride,
+    },
+  ] as const;
+
+  for (const testCase of cases) {
+    testCase.setOverride(async () => {
+      throw hostilePrototypeFailure(`${testCase.provider}-tls`);
+    });
+    try {
+      const result = await validateProviderApiKey({
+        provider: testCase.provider,
+        apiKey: testCase.apiKey,
+      });
+      assert.equal(result.valid, false, testCase.provider);
+      assert.equal(result.error, "Validation failed", testCase.provider);
+    } finally {
+      testCase.setOverride(null);
+    }
+  }
 });
 
 test("grok-web validator: Cloudflare challenge page is detected and reported", async () => {
@@ -966,8 +1385,9 @@ test("chatgpt-web validator: 5xx → ChatGPT unavailable", async () => {
 test("chatgpt-web validator: 200 non-JSON content-type surfaces a cookie hint", async () => {
   __setTlsFetchOverrideForTesting(async () =>
     makeTlsResponse(200, "<html>blocked</html>", {
-      "content-type": "text/html",
-      "cf-ray": "ray-123",
+      "content-type":
+        "text/html; report=/srv/private/chatgpt-header.txt; access_token=chatgpt-header-secret",
+      "cf-ray": "ray-123 api_key=chatgpt-ray-secret path=/srv/private/cf-ray.log",
     })
   );
 
@@ -977,12 +1397,19 @@ test("chatgpt-web validator: 200 non-JSON content-type surfaces a cookie hint", 
   });
   assert.equal(result.valid, false);
   assert.match(result.error || "", /non-JSON.*text\/html.*cf-ray=ray-123/i);
+  assert.match(result.error || "", /paste the FULL Cookie line/i);
+  assert.doesNotMatch(
+    result.error || "",
+    /srv\/private|chatgpt-header-secret|chatgpt-ray-secret|chatgpt-header\.txt|cf-ray\.log/i
+  );
 });
 
 test("chatgpt-web validator: TlsClientUnavailableError surfaces a clear message", async () => {
   const { TlsClientUnavailableError } = await import("../../open-sse/services/chatgptTlsClient.ts");
   __setTlsFetchOverrideForTesting(async () => {
-    throw new TlsClientUnavailableError("native binding failed to load");
+    throw new TlsClientUnavailableError(
+      "native binding failed at /srv/private/chatgpt api_key=sk-chatgpt-secret\n at /srv/stack.ts:1"
+    );
   });
 
   const result = await validateProviderApiKey({
@@ -991,6 +1418,20 @@ test("chatgpt-web validator: TlsClientUnavailableError surfaces a clear message"
   });
   assert.equal(result.valid, false);
   assert.match(result.error || "", /chatgpt-web requires this/i);
+  assert.doesNotMatch(result.error || "", /srv\/private|sk-chatgpt-secret|stack\.ts/);
+});
+
+test("chatgpt-web validator fails closed on a hostile TLS prototype", async () => {
+  __setTlsFetchOverrideForTesting(async () => {
+    throw hostilePrototypeFailure("chatgpt-validator-tls");
+  });
+
+  const result = await validateProviderApiKey({
+    provider: "chatgpt-web",
+    apiKey: "any-token",
+  });
+  assert.equal(result.valid, false);
+  assert.equal(result.error, "Validation failed");
 });
 
 test("search provider validators cover success, client errors, server errors and custom user agent injection", async () => {
@@ -1318,7 +1759,7 @@ test("Anthropic-compatible and Claude Code compatible validators cover direct su
     },
   });
 
-  globalThis.fetch = async (url, init = {}) => {
+  globalThis.fetch = async (_url, init = {}) => {
     if (init.method === "GET") {
       return new Response(JSON.stringify({ error: "bridge unavailable" }), { status: 500 });
     }
@@ -1346,7 +1787,7 @@ test("Claude Code compatible validator rejects missing base URL and bridge auth 
     providerSpecificData: {},
   });
 
-  globalThis.fetch = async (url, init = {}) => {
+  globalThis.fetch = async (_url, init = {}) => {
     if (init.method === "GET") {
       throw new Error("models offline");
     }
@@ -2458,7 +2899,9 @@ test("claude-web validator: 500 → Claude.ai unavailable", async () => {
 test("claude-web validator: TLS client unavailable → clear error", async () => {
   const { TlsClientUnavailableError } = await import("../../open-sse/services/claudeTlsClient.ts");
   __setClaudeTlsFetchOverride(async () => {
-    throw new TlsClientUnavailableError("tls-client-node not installed");
+    throw new TlsClientUnavailableError(
+      "tls-client-node not installed at /srv/private/claude api_key=sk-claude-secret\n at /srv/stack.ts:1"
+    );
   });
 
   const result = await validateProviderApiKey({
@@ -2468,7 +2911,25 @@ test("claude-web validator: TLS client unavailable → clear error", async () =>
 
   assert.equal(result.valid, false);
   assert.match(result.error || "", /tls-client-node not installed/i);
+  assert.doesNotMatch(result.error || "", /srv\/private|sk-claude-secret|stack\.ts/);
   __setClaudeTlsFetchOverride(null);
+});
+
+test("claude-web validator fails closed on a hostile TLS prototype", async () => {
+  __setClaudeTlsFetchOverride(async () => {
+    throw hostilePrototypeFailure("claude-validator-tls");
+  });
+
+  try {
+    const result = await validateProviderApiKey({
+      provider: "claude-web",
+      apiKey: "sessionKey=sk-ant-sid02-any-key",
+    });
+    assert.equal(result.valid, false);
+    assert.equal(result.error, "Validation failed");
+  } finally {
+    __setClaudeTlsFetchOverride(null);
+  }
 });
 
 test("claude-web validator: bare sessionKey value gets prefixed", async () => {
@@ -2656,7 +3117,7 @@ test("copilot-m365-web validator: requires chathubPath", async () => {
 // ─── t3-web validator ────────────────────────────────────────────────────────
 
 test("t3-web validator: valid cookies → valid", async () => {
-  globalThis.fetch = async (url, init = {}) => {
+  globalThis.fetch = async (url, _init = {}) => {
     if (String(url).includes("t3.chat")) {
       return new Response("ok", { status: 200 });
     }
@@ -2685,7 +3146,7 @@ test("t3-web validator: 500 → unavailable", async () => {
 });
 
 test("t3-web validator: valid cookies → passes through", async () => {
-  globalThis.fetch = async (url, init = {}) => {
+  globalThis.fetch = async (url, _init = {}) => {
     if (String(url).includes("t3.chat")) {
       return new Response("ok", { status: 200 });
     }

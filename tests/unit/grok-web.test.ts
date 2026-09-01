@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { __setTlsFetchOverrideForTesting } from "../../open-sse/services/grokTlsClient.ts";
+import {
+  __setTlsFetchOverrideForTesting,
+  TlsClientUnavailableError,
+} from "../../open-sse/services/grokTlsClient.ts";
 
 const { GrokWebExecutor } = await import("../../open-sse/executors/grok-web.ts");
 const { getExecutor, hasSpecializedExecutor } = await import("../../open-sse/executors/index.ts");
@@ -33,6 +36,42 @@ function mockFetch(status: number, events: unknown[]) {
       headers: new Headers({ "Content-Type": "application/x-ndjson" }),
       text: null,
       body: mockGrokStream(events),
+    };
+  });
+  return () => {
+    __setTlsFetchOverrideForTesting(null);
+  };
+}
+
+function mockFetchError(error: unknown) {
+  __setTlsFetchOverrideForTesting(async () => {
+    throw error;
+  });
+  return () => {
+    __setTlsFetchOverrideForTesting(null);
+  };
+}
+
+function mockFetchLateStreamError(error: unknown) {
+  __setTlsFetchOverrideForTesting(async () => {
+    const encoder = new TextEncoder();
+    let sentPartial = false;
+    return {
+      status: 200,
+      headers: new Headers({ "Content-Type": "application/x-ndjson" }),
+      text: null,
+      body: new ReadableStream({
+        pull(controller) {
+          if (!sentPartial) {
+            sentPartial = true;
+            controller.enqueue(
+              encoder.encode(`${JSON.stringify({ result: { response: { token: "partial" } } })}\n`)
+            );
+            return;
+          }
+          controller.error(error);
+        },
+      }),
     };
   });
   return () => {
@@ -76,6 +115,11 @@ const SIMPLE_RESPONSE = [
   { result: { response: { token: " world!" } } },
   { result: { response: { modelResponse: { message: "Hello world!", responseId: "resp-123" } } } },
 ];
+
+const SENSITIVE_GROK_UPSTREAM_ERROR =
+  "Grok event failed at /srv/private/grok-secret.ts:41:9; " +
+  "access_token=grok-upstream-secret\n" +
+  "    at SecretGrokFrame (/srv/private/grok-stack.ts:3:4)";
 
 test.afterEach(() => {
   __setTlsFetchOverrideForTesting(null);
@@ -2220,6 +2264,275 @@ test("Error: Grok stream error returns 502", async () => {
     assert.ok(json.error.message.includes("Internal error"));
   } finally {
     restore();
+  }
+});
+
+test("Error: non-streaming sanitizes upstream event errors before JSON output", async () => {
+  const restore = mockFetch(200, [
+    { error: { message: SENSITIVE_GROK_UPSTREAM_ERROR, code: "500" } },
+  ]);
+  try {
+    const executor = new GrokWebExecutor();
+    const result = await executor.execute({
+      model: "grok-4",
+      body: { messages: [{ role: "user", content: "test" }], stream: false },
+      stream: false,
+      credentials: { apiKey: "test" },
+      signal: AbortSignal.timeout(10000),
+      log: null,
+    });
+
+    assert.equal(result.response.status, 502);
+    const payloadText = await result.response.text();
+    const json = JSON.parse(payloadText);
+    assert.equal(json.error?.type, "upstream_error");
+    assert.equal(json.error?.code, "GROK_ERROR");
+    assert.match(String(json.error?.message || ""), /Grok event failed/);
+    assert.doesNotMatch(payloadText, /\/srv\/private\/grok-(?:secret|stack)\.ts/);
+    assert.doesNotMatch(payloadText, /grok-upstream-secret|SecretGrokFrame/);
+  } finally {
+    restore();
+  }
+});
+
+test("Error: streaming sanitizes upstream event errors before SSE output", async () => {
+  const restore = mockFetch(200, [
+    { error: { message: SENSITIVE_GROK_UPSTREAM_ERROR, code: "500" } },
+  ]);
+  try {
+    const executor = new GrokWebExecutor();
+    const result = await executor.execute({
+      model: "grok-4",
+      body: { messages: [{ role: "user", content: "test" }], stream: true },
+      stream: true,
+      credentials: { apiKey: "test" },
+      signal: AbortSignal.timeout(10000),
+      log: null,
+    });
+
+    assert.equal(result.response.status, 200);
+    assert.equal(result.response.headers.get("Content-Type"), "text/event-stream");
+    const text = await result.response.text();
+    assert.match(text, /\[Error:/);
+    assert.match(text, /"finish_reason":"stop"/);
+    assert.match(text, /data: \[DONE\]/);
+    assert.doesNotMatch(text, /\/srv\/private\/grok-(?:secret|stack)\.ts/);
+    assert.doesNotMatch(text, /grok-upstream-secret|SecretGrokFrame/);
+  } finally {
+    restore();
+  }
+});
+
+test("Error: blank upstream event errors use a stable public fallback", async (t) => {
+  for (const stream of [false, true]) {
+    await t.test(stream ? "streaming SSE" : "non-streaming JSON", async () => {
+      const restore = mockFetch(200, [
+        {
+          error: {
+            message: "\n    at SecretOnlyFrame (/srv/private/grok-stack-only.ts:3:4)",
+            code: "500",
+          },
+        },
+      ]);
+      try {
+        const executor = new GrokWebExecutor();
+        const result = await executor.execute({
+          model: "grok-4",
+          body: { messages: [{ role: "user", content: "test" }], stream },
+          stream,
+          credentials: { apiKey: "test" },
+          signal: AbortSignal.timeout(10000),
+          log: null,
+        });
+
+        if (stream) {
+          assert.equal(result.response.status, 200);
+          const text = await result.response.text();
+          assert.match(text, /\[Error: Grok upstream error\]/);
+          assert.match(text, /data: \[DONE\]/);
+          assert.doesNotMatch(text, /SecretOnlyFrame|grok-stack-only/);
+        } else {
+          assert.equal(result.response.status, 502);
+          const json = JSON.parse(await result.response.text());
+          assert.equal(json.error?.message, "Grok upstream error");
+          assert.equal(json.error?.type, "upstream_error");
+          assert.equal(json.error?.code, "GROK_ERROR");
+        }
+      } finally {
+        restore();
+      }
+    });
+  }
+});
+
+test("Error: late reader failures are sanitized before the SSE stream-error delta", async (t) => {
+  const cases = [
+    {
+      name: "Error rejection",
+      error: new Error(SENSITIVE_GROK_UPSTREAM_ERROR),
+      forbidden: ["/srv/private/grok-secret.ts", "grok-upstream-secret", "SecretGrokFrame"],
+    },
+    {
+      name: "non-Error rejection",
+      error: SENSITIVE_GROK_UPSTREAM_ERROR,
+      forbidden: ["/srv/private/grok-secret.ts", "grok-upstream-secret", "SecretGrokFrame"],
+    },
+    {
+      name: "stack-only rejection",
+      error: "\n    at SecretOnlyFrame (/srv/private/grok-late-stack-only.ts:2:3)",
+      forbidden: ["/srv/private/grok-late-stack-only.ts", "SecretOnlyFrame"],
+      expectedContent: "[Stream error: Grok upstream error]",
+    },
+    {
+      name: "hostile toString rejection",
+      error: {
+        toString() {
+          throw new Error("access_token=grok-hostile-secret at /srv/private/grok-hostile.ts:1:1");
+        },
+      },
+      forbidden: ["grok-hostile-secret", "grok-hostile"],
+      expectedContent: "[Stream error: Grok upstream error]",
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const restore = mockFetchLateStreamError(testCase.error);
+      try {
+        const executor = new GrokWebExecutor();
+        const result = await executor.execute({
+          model: "grok-4",
+          body: { messages: [{ role: "user", content: "test" }], stream: true },
+          stream: true,
+          credentials: { apiKey: "test" },
+          signal: AbortSignal.timeout(10000),
+          log: null,
+        });
+
+        assert.equal(result.response.status, 200);
+        const text = await result.response.text();
+        const dataLines = text.split("\n").filter((line) => line.startsWith("data: "));
+        const payloads = dataLines
+          .filter((line) => line !== "data: [DONE]")
+          .map((line) => JSON.parse(line.slice(6)));
+        const errorChunk = payloads.find((payload) =>
+          String(payload.choices?.[0]?.delta?.content || "").startsWith("[Stream error:")
+        );
+
+        assert.ok(errorChunk, "must emit a structured stream-error delta");
+        assert.equal(errorChunk.choices[0].finish_reason, "stop");
+        if (testCase.expectedContent) {
+          assert.equal(errorChunk.choices[0].delta.content, testCase.expectedContent);
+        }
+        assert.equal(dataLines.at(-1), "data: [DONE]");
+        for (const leakedValue of testCase.forbidden) {
+          assert.ok(!text.includes(leakedValue), `must not expose ${leakedValue}`);
+        }
+      } finally {
+        restore();
+      }
+    });
+  }
+});
+
+test("Error: fetch failures sanitize sensitive details in logs and JSON", async (t) => {
+  const cases = [
+    {
+      name: "generic fetch rejection",
+      error: new Proxy(new Error(SENSITIVE_GROK_UPSTREAM_ERROR), {
+        getPrototypeOf() {
+          throw new Error("grok-prototype-secret");
+        },
+      }),
+      expectedMessage: /Grok connection failed/,
+      expectedCode: undefined,
+    },
+    {
+      name: "TLS client unavailable",
+      error: new TlsClientUnavailableError(SENSITIVE_GROK_UPSTREAM_ERROR),
+      expectedMessage: /Grok TLS client unavailable/,
+      expectedCode: "TLS_CLIENT_UNAVAILABLE",
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const errorLogs: string[] = [];
+      const restore = mockFetchError(testCase.error);
+      try {
+        const executor = new GrokWebExecutor();
+        const result = await executor.execute({
+          model: "grok-4",
+          body: { messages: [{ role: "user", content: "test" }] },
+          stream: false,
+          credentials: { apiKey: "test" },
+          signal: AbortSignal.timeout(10000),
+          log: {
+            error: (_tag, message) => errorLogs.push(String(message)),
+          },
+        });
+
+        assert.equal(result.response.status, 502);
+        assert.equal(errorLogs.length, 1);
+        const responseText = await result.response.text();
+        const json = JSON.parse(responseText);
+        assert.equal(json.error?.type, "upstream_error");
+        assert.match(String(json.error?.message || ""), testCase.expectedMessage);
+        assert.equal(json.error?.code, testCase.expectedCode);
+        const publicOutput = `${errorLogs.join("\n")}\n${responseText}`;
+        assert.doesNotMatch(publicOutput, /\/srv\/private\/grok-(?:secret|stack)\.ts/);
+        assert.doesNotMatch(publicOutput, /grok-(?:upstream|prototype)-secret|SecretGrokFrame/);
+        assert.doesNotMatch(responseText, /"(?:stack|cause)"\s*:/i);
+      } finally {
+        restore();
+      }
+    });
+  }
+});
+
+test("Error: blank fetch failures use a stable fallback in logs and JSON", async (t) => {
+  const cases = [
+    {
+      name: "generic fetch rejection",
+      error: new Error("\n    at SecretOnlyFrame (/srv/private/grok-fetch-stack-only.ts:2:3)"),
+      expectedLog: "Fetch failed: Grok upstream error",
+      expectedMessage: "Grok connection failed: Grok upstream error",
+    },
+    {
+      name: "TLS client unavailable",
+      error: new TlsClientUnavailableError(
+        "\n    at SecretOnlyFrame (/srv/private/grok-tls-stack-only.ts:2:3)"
+      ),
+      expectedLog: "TLS client unavailable: Grok upstream error",
+      expectedMessage: "Grok TLS client unavailable: Grok upstream error",
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const errorLogs: string[] = [];
+      const restore = mockFetchError(testCase.error);
+      try {
+        const executor = new GrokWebExecutor();
+        const result = await executor.execute({
+          model: "grok-4",
+          body: { messages: [{ role: "user", content: "test" }] },
+          stream: false,
+          credentials: { apiKey: "test" },
+          signal: AbortSignal.timeout(10000),
+          log: {
+            error: (_tag, message) => errorLogs.push(String(message)),
+          },
+        });
+
+        assert.equal(result.response.status, 502);
+        assert.deepEqual(errorLogs, [testCase.expectedLog]);
+        const json = JSON.parse(await result.response.text());
+        assert.equal(json.error?.message, testCase.expectedMessage);
+      } finally {
+        restore();
+      }
+    });
   }
 });
 

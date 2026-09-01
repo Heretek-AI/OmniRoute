@@ -11,6 +11,7 @@ import {
   syncStandaloneNativeAssets as _syncNativeAssets,
   syncStandaloneExtraModules as _syncExtraModules,
 } from "./assembleStandalone.mjs";
+import { fixTlsClientNodeBinary } from "./fixTlsClientNodeBinary.mjs";
 import {
   isBackendOnlyBuild,
   stubDashboardPages,
@@ -259,6 +260,35 @@ export async function syncStandaloneExtraModules(
   return _syncExtraModules(rootDir, fsImpl, log);
 }
 
+/**
+ * Assemble the movable standalone runtime, then verify the exact TLS native seed
+ * that consumers will execute. Keeping both operations in one awaited composition
+ * prevents a successful copy/prune from bypassing the pinned-digest gate.
+ */
+export async function assembleAndVerifyStandalone({
+  rootDir = projectRoot,
+  buildDistDir = distDir,
+  standaloneDir = path.join(buildDistDir, "standalone"),
+  assembleImpl = assembleStandalone,
+  verifyImpl = fixTlsClientNodeBinary,
+} = {}) {
+  await assembleImpl({
+    distDir: buildDistDir,
+    outDir: standaloneDir,
+    projectRoot: rootDir,
+    patchTurbopackChunks: true,
+    copyNatives: true,
+    materializeSymlinks: true,
+  });
+
+  await verifyImpl({
+    rootDir,
+    standaloneDir,
+    strict: true,
+    requireStandalone: true,
+  });
+}
+
 export async function main() {
   const movedPaths = [];
   const transientBuildPaths = getTransientBuildPaths();
@@ -299,7 +329,21 @@ export async function main() {
 
     const result = await runNextBuild();
     const standaloneDir = path.join(distDir, "standalone");
-    if (result.code === 0 && (await exists(standaloneDir))) {
+    if (result.code === 0) {
+      let standaloneStats;
+      try {
+        standaloneStats = await fs.lstat(standaloneDir);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+
+      if (!standaloneStats?.isDirectory() || standaloneStats.isSymbolicLink()) {
+        throw new Error(
+          `Next.js build exited successfully but did not produce a standalone directory at ${standaloneDir}. ` +
+            'Ensure Next.js output is set to "standalone" and inspect the preceding build-worker logs.'
+        );
+      }
+
       try {
         await fs.cp(path.join(projectRoot, "docs"), path.join(standaloneDir, "docs"), {
           recursive: true,
@@ -337,34 +381,28 @@ export async function main() {
         );
       }
 
-      try {
-        console.log(
-          "[build-next-isolated] Assembling standalone bundle (static + public + natives + extras)..."
+      console.log(
+        "[build-next-isolated] Assembling standalone bundle (static + public + natives + extras)..."
+      );
+      // Match the hardened packaging path used by Electron builds:
+      // Turbopack can emit hashed external-package references and standalone
+      // symlinks that break after the bundle is moved/copied. The composition
+      // verifies the copied TLS seed before any later build step can succeed.
+      await assembleAndVerifyStandalone({
+        rootDir: projectRoot,
+        buildDistDir: distDir,
+        standaloneDir,
+      });
+      const { spawnSync } = await import("node:child_process");
+      const basePathWrite = spawnSync(
+        process.execPath,
+        [path.join(projectRoot, "scripts", "build", "write-build-base-path.mjs")],
+        { cwd: projectRoot, env: process.env, stdio: "inherit" }
+      );
+      if (basePathWrite.status !== 0) {
+        console.warn(
+          "[build-next-isolated] Non-fatal error writing BUILD_OMNIROUTE_BASE_PATH sentinel"
         );
-        assembleStandalone({
-          distDir,
-          outDir: standaloneDir,
-          projectRoot,
-          // Match the hardened packaging path used by Electron builds:
-          // Turbopack can emit hashed external-package references and
-          // standalone symlinks that break after the bundle is moved/copied.
-          patchTurbopackChunks: true,
-          copyNatives: true,
-          materializeSymlinks: true,
-        });
-        const { spawnSync } = await import("node:child_process");
-        const basePathWrite = spawnSync(
-          process.execPath,
-          [path.join(projectRoot, "scripts", "build", "write-build-base-path.mjs")],
-          { cwd: projectRoot, env: process.env, stdio: "inherit" }
-        );
-        if (basePathWrite.status !== 0) {
-          console.warn(
-            "[build-next-isolated] Non-fatal error writing BUILD_OMNIROUTE_BASE_PATH sentinel"
-          );
-        }
-      } catch (assembleErr) {
-        console.warn("[build-next-isolated] Non-fatal error assembling standalone:", assembleErr);
       }
     }
     process.exitCode = result.code;

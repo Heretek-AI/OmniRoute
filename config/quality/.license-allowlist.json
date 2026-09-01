@@ -76,13 +76,15 @@
       "reviewAt": "v4.0.0"
     },
     "tls-client-node": {
-      "license": "Custom: LICENSE (Apache-2.0 + Commons Clause)",
-      "justification": "TEMPORARY bridge for a restrictive, source-available dependency: tls-client-node uses Apache-2.0 with the Commons Clause, which removes the right to Sell the software when a paid product or service derives entirely or substantially from its functionality. The shared native TLS transport serves six providers: chatgpt-web, claude-web, perplexity-web, grok-web, notion-web, and lmarena. Shipping the required notices does not grant commercial rights. Legal review is required before commercial deployment; replace with a permissive transport such as wreq-js or obtain separate permission before this exception expires.",
+      "version": "0.2.0",
+      "license": "Custom: LICENSE",
+      "justification": "TEMPORARY bridge for a restrictive, source-available dependency: tls-client-node uses Apache-2.0 with the Commons Clause, which removes the right to Sell the software when a paid product or service derives entirely or substantially from its functionality. The shared native TLS transport serves six providers: chatgpt-web, claude-web, perplexity-web, grok-web, notion-web, and lmarena. Shipping the required notices does not grant commercial rights. Legal review is required before commercial deployment; replace with a permissive transport such as wreq-js or obtain separate permission before this exception expires. Tracked by PR #11742.",
       "risk": "medium",
       "temporary": true,
       "owner": "@diegosouzapw",
       "reviewBy": "2026-09-30",
-      "reviewAt": "v3.9.0"
+      "reviewAt": "v3.9.0",
+      "classification": "Apache-2.0 with Commons Clause; non-OSI source-available"
     }
   }
 }

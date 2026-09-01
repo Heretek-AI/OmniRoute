@@ -2,12 +2,38 @@
  * Response mapping helpers for the Arena (lmarena) executor — kept small so
  * the executor methods stay under complexity / max-lines gates.
  */
-import { sanitizeErrorMessage } from "../../utils/error.ts";
 import { isCloudflareChallenge } from "../../services/lmarenaTlsClient.ts";
+import { sanitizeLMArenaError } from "./error.ts";
 import { markLMArenaCatalogModelDead } from "./models.ts";
 import { parseArenaSSE } from "./stream.ts";
 
 const encoder = new TextEncoder();
+const SAFE_ARENA_STREAM_ERROR_NAMES = new Set([
+  "AbortError",
+  "ResponseAborted",
+  "TimeoutError",
+  "BodyTimeoutError",
+]);
+
+function projectArenaStreamError(error: unknown, publicMessage: string): Error {
+  const projected = new Error(publicMessage) as Error & { statusCode?: number };
+  projected.stack = undefined;
+  if (!error || typeof error !== "object") return projected;
+
+  try {
+    const name = (error as { name?: unknown }).name;
+    if (typeof name === "string" && SAFE_ARENA_STREAM_ERROR_NAMES.has(name)) {
+      projected.name = name;
+    }
+    const statusCode = Number((error as { statusCode?: unknown }).statusCode);
+    if (Number.isInteger(statusCode) && statusCode >= 400 && statusCode <= 599) {
+      projected.statusCode = statusCode;
+    }
+  } catch {
+    // Hostile thrown values must not escape through coercing metadata accessors.
+  }
+  return projected;
+}
 
 export function errorResponse(
   status: number,
@@ -15,9 +41,10 @@ export function errorResponse(
   type: string,
   code: string
 ): Response {
+  const publicMessage = sanitizeLMArenaError(message);
   return new Response(
     JSON.stringify({
-      error: { message: sanitizeErrorMessage(message), type, code },
+      error: { message: publicMessage, type, code },
     }),
     { status, headers: { "Content-Type": "application/json" } }
   );
@@ -114,7 +141,7 @@ export function mapTlsUnavailable(
   return {
     response: errorResponse(
       502,
-      `Arena TLS impersonation unavailable: ${error.message}. Install/repair tls-client-node native binary.`,
+      `Arena TLS impersonation unavailable: ${sanitizeLMArenaError(error)}. Install/repair tls-client-node native binary.`,
       "upstream_error",
       "TLS_CLIENT_UNAVAILABLE"
     ),
@@ -125,13 +152,13 @@ export function mapTlsUnavailable(
 }
 
 export function mapNetworkError(
-  message: string,
+  message: unknown,
   url: string,
   headers: Record<string, string>,
   transformedBody: unknown
 ) {
   return {
-    response: errorResponse(502, message, "network_error", "request_failed"),
+    response: errorResponse(502, sanitizeLMArenaError(message), "network_error", "request_failed"),
     url,
     headers,
     transformedBody,
@@ -199,7 +226,7 @@ function handleArenaEventLine(
     enqueueSse(controller, {
       ...baseChunk(model),
       choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-      error: { message: sanitizeErrorMessage(event.content || "Unknown error") },
+      error: { message: sanitizeLMArenaError(event.content) },
     });
     controller.close();
     return true;
@@ -220,9 +247,28 @@ export function createOpenAIArenaStream(opts: {
   const { reader, model, signal, log } = opts;
   const decoder = new TextDecoder();
   let buffer = "";
+  let readerCleanup: Promise<void> | null = null;
+
+  const cleanupReader = (): Promise<void> => {
+    if (readerCleanup) return readerCleanup;
+    readerCleanup = (async () => {
+      try {
+        await reader.cancel();
+      } catch {
+        // The upstream may already be closed or errored; still release its lock below.
+      }
+      try {
+        reader.releaseLock();
+      } catch {
+        // A concurrent cleanup may already have released this reader.
+      }
+    })();
+    return readerCleanup;
+  };
 
   const onAbort = () => {
-    void reader.cancel().catch(() => undefined);
+    // The upstream reader may already be closed; cleanup failure must not replace the abort outcome.
+    void cleanupReader();
   };
   if (signal) {
     if (signal.aborted) onAbort();
@@ -234,7 +280,8 @@ export function createOpenAIArenaStream(opts: {
       try {
         while (true) {
           if (signal?.aborted) {
-            await reader.cancel().catch(() => undefined);
+            // Cancellation is best-effort cleanup; the already-observed abort remains authoritative.
+            await cleanupReader();
             controller.close();
             return;
           }
@@ -252,15 +299,17 @@ export function createOpenAIArenaStream(opts: {
         }
         emitStopAndDone(controller, model);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        log?.error?.("LMArenaExecutor", `Streaming error: ${message}`);
-        controller.error(error);
+        const publicMessage = sanitizeLMArenaError(error, "Arena upstream stream error");
+        log?.error?.("LMArenaExecutor", `Streaming error: ${publicMessage}`);
+        controller.error(projectArenaStreamError(error, publicMessage));
       } finally {
+        await cleanupReader();
         if (signal) signal.removeEventListener("abort", onAbort);
       }
     },
-    cancel() {
-      void reader.cancel().catch(() => undefined);
+    async cancel() {
+      // The consumer may cancel after the upstream reader closed; cleanup must not mask that outcome.
+      await cleanupReader();
       if (signal) signal.removeEventListener("abort", onAbort);
     },
   });

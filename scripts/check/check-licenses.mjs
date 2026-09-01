@@ -35,7 +35,7 @@ const PRINT_JSON = process.argv.includes("--json");
 /**
  * Loads and returns the license allowlist from .license-allowlist.json.
  *
- * @returns {{ allowed: string[], allowedExpressions: string[], exceptions: Record<string, {license:string, justification:string, risk:string}> }}
+ * @returns {{ allowed: string[], allowedExpressions: string[], exceptions: Record<string, {license:string, version?:string, justification:string, risk:string}> }}
  */
 export function loadAllowlist() {
   if (!fs.existsSync(ALLOWLIST_PATH)) {
@@ -59,32 +59,114 @@ export function loadAllowlist() {
 /**
  * Classifies a package+license against the allowlist.
  *
- * @param {string} packageName - Package name without version, e.g. "lightningcss"
+ * @param {string} packageName - Package key including version when available, e.g. "tls-client-node@0.2.0"
  * @param {string} license     - License string from license-checker, e.g. "MPL-2.0"
  * @param {{ allowed: string[], allowedExpressions: string[], exceptions: Record<string,any> }} allowlist
+ * @param {{ now?: Date }} [options]
  * @returns {{ status: "allowed" | "exception" | "denied", reason: string }}
  */
-export function classifyLicense(packageName, license, allowlist) {
+export function classifyLicense(packageName, license, allowlist, { now = new Date() } = {}) {
   const { allowed, allowedExpressions, exceptions } = allowlist;
-
-  // 1. Direct SPDX match
-  if (allowed.includes(license)) {
-    return { status: "allowed", reason: `SPDX match: ${license}` };
-  }
-
-  // 2. Expression match (e.g. "(MIT OR Apache-2.0)")
-  if (allowedExpressions.includes(license)) {
-    return { status: "allowed", reason: `allowed expression: ${license}` };
-  }
-
-  // 3. Per-package exception (strip version suffix for lookup)
   const baseName = stripVersion(packageName);
+
+  // 1. A package-specific exception is an overlay on the global policy. It
+  // must be evaluated first so a newly detected globally allowed SPDX id
+  // cannot bypass the exception's exact-license, ownership, or expiry gates.
   if (exceptions[baseName]) {
     const exc = exceptions[baseName];
+    if (typeof exc.license !== "string" || !exc.license.trim()) {
+      return {
+        status: "denied",
+        reason: `invalid exception license for '${baseName}': expected a non-empty string`,
+      };
+    }
+    if (license !== exc.license) {
+      return {
+        status: "denied",
+        reason: `license '${license}' does not match exception license '${exc.license}' for '${baseName}'`,
+      };
+    }
+    if (Object.prototype.hasOwnProperty.call(exc, "version")) {
+      if (
+        typeof exc.version !== "string" ||
+        !exc.version.trim() ||
+        exc.version !== exc.version.trim() ||
+        /[@\s]/.test(exc.version)
+      ) {
+        return {
+          status: "denied",
+          reason: `invalid exception version for '${baseName}': expected an exact non-empty package version`,
+        };
+      }
+
+      const versionSuffix = packageName.slice(baseName.length);
+      if (!versionSuffix) {
+        return {
+          status: "denied",
+          reason: `version-pinned exception for '${baseName}' requires package key '${baseName}@${exc.version}', but '${packageName}' has no version`,
+        };
+      }
+      const detectedVersion = versionSuffix.startsWith("@") ? versionSuffix.slice(1) : "";
+      if (!detectedVersion || /[@\s]/.test(detectedVersion)) {
+        return {
+          status: "denied",
+          reason: `version-pinned exception for '${baseName}' cannot evaluate malformed package key '${packageName}'`,
+        };
+      }
+      if (detectedVersion !== exc.version) {
+        return {
+          status: "denied",
+          reason: `package version '${detectedVersion}' does not match exception version '${exc.version}' for '${baseName}'`,
+        };
+      }
+    }
+    if (exc.temporary === true) {
+      if (typeof exc.owner !== "string" || !exc.owner.trim()) {
+        return {
+          status: "denied",
+          reason: `temporary exception for '${baseName}' has no owner`,
+        };
+      }
+      const reviewBy = exc.reviewBy;
+      const isDateOnly = typeof reviewBy === "string" && /^\d{4}-\d{2}-\d{2}$/.test(reviewBy);
+      const deadline = isDateOnly ? new Date(`${reviewBy}T23:59:59.999Z`) : new Date(NaN);
+      const isRealCalendarDate =
+        isDateOnly &&
+        !Number.isNaN(deadline.getTime()) &&
+        deadline.toISOString().slice(0, 10) === reviewBy;
+      if (!isRealCalendarDate) {
+        return {
+          status: "denied",
+          reason: `temporary exception for '${baseName}' has invalid reviewBy metadata`,
+        };
+      }
+      if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+        return {
+          status: "denied",
+          reason: `temporary exception for '${baseName}' cannot be evaluated with an invalid clock`,
+        };
+      }
+      if (now.getTime() > deadline.getTime()) {
+        return {
+          status: "denied",
+          reason: `temporary exception for '${baseName}' expired at reviewBy=${reviewBy}`,
+        };
+      }
+    }
     return {
       status: "exception",
       reason: `exception: ${exc.justification} [risk=${exc.risk}]`,
     };
+  }
+
+  // 2. Direct SPDX match
+  if (allowed.includes(license)) {
+    return { status: "allowed", reason: `SPDX match: ${license}` };
+  }
+
+  // 3. Expression match (e.g. "(MIT OR Apache-2.0)")
+  if (allowedExpressions.includes(license)) {
+    return { status: "allowed", reason: `allowed expression: ${license}` };
   }
 
   // 4. Denied

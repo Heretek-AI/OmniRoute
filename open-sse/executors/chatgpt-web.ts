@@ -21,6 +21,7 @@ import { prepareToolMessages } from "../translator/webTools.ts";
 import { buildToolModeResponse } from "./chatgptWebTools.ts";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { sha3_512Hex } from "../utils/sha3-512.ts";
+import { sanitizeErrorMessage } from "../utils/error.ts";
 import {
   tlsFetchChatGpt,
   TlsClientUnavailableError,
@@ -403,7 +404,7 @@ async function runSessionWarmup(
     } catch (err) {
       log?.debug?.(
         "CGPT-WEB",
-        `warmup ${url} failed: ${err instanceof Error ? err.message : String(err)}`
+        `warmup ${sanitizeUpstreamLogDetail(url, "ChatGPT warmup endpoint")} failed: ${sanitizeUpstreamLogDetail(err)}`
       );
     }
   }
@@ -678,9 +679,10 @@ async function solvePow(opts: PowOptions): Promise<string> {
       return `${opts.prefix}${b64}`;
     }
   }
+  const safeTarget = opts.target ? "<provided>" : "<empty>";
   opts.log?.warn?.(
     "CGPT-WEB",
-    `PoW (${opts.label}) exhausted ${opts.maxIter} iterations against target=${opts.target || "<empty>"}; submitting unsolved token (Sentinel may reject)`
+    `PoW (${opts.label}) exhausted ${opts.maxIter} iterations against target=${safeTarget}; submitting unsolved token (Sentinel may reject)`
   );
   const b64 = Buffer.from(JSON.stringify(cfg)).toString("base64");
   return `${opts.prefix}${b64}`;
@@ -1439,7 +1441,9 @@ async function fetchConversationDetail(
     if (response.status >= 400) {
       ctx.log?.warn?.(
         "CGPT-WEB",
-        `conversation poll ${response.status}: ${(response.text || "").slice(0, 300)}`
+        `conversation poll ${response.status}: ${sanitizeUpstreamLogDetail(
+          (response.text || "").slice(0, 300)
+        )}`
       );
       return { detail: null, terminal: [401, 403, 404].includes(response.status) };
     }
@@ -1449,10 +1453,7 @@ async function fetchConversationDetail(
       terminal: false,
     };
   } catch (err) {
-    ctx.log?.warn?.(
-      "CGPT-WEB",
-      `conversation poll failed: ${err instanceof Error ? err.message : String(err)}`
-    );
+    ctx.log?.warn?.("CGPT-WEB", `conversation poll failed: ${sanitizeUpstreamLogDetail(err)}`);
     return { detail: null, terminal: false };
   }
 }
@@ -1485,19 +1486,20 @@ async function pollForFinalAssistantAnswer(
     await delayWithAbort(Math.min(intervalMs, remaining), ctx.signal);
   }
 
+  const safeConversationId = sanitizeOpaqueLogId(conversationId);
   if (last) {
     ctx.log?.warn?.(
       "CGPT-WEB",
       terminalPollFailure
-        ? `conversation poll stopped before finished_successfully; returning latest assistant text for ${conversationId}`
-        : `conversation poll timed out before finished_successfully; returning latest assistant text for ${conversationId}`
+        ? `conversation poll stopped before finished_successfully; returning latest assistant text for ${safeConversationId}`
+        : `conversation poll timed out before finished_successfully; returning latest assistant text for ${safeConversationId}`
     );
   } else {
     ctx.log?.warn?.(
       "CGPT-WEB",
       terminalPollFailure
-        ? `conversation poll stopped without assistant text for ${conversationId}`
-        : `conversation poll timed out without assistant text for ${conversationId}`
+        ? `conversation poll stopped without assistant text for ${safeConversationId}`
+        : `conversation poll timed out without assistant text for ${safeConversationId}`
     );
   }
   return last;
@@ -1558,9 +1560,10 @@ async function resolveImagePointers(
       );
       if (url) urls.push(url);
     } catch (err) {
+      const safePointerScheme = safeAssetPointerScheme(ref.pointer);
       log?.warn?.(
         "CGPT-WEB",
-        `Image resolve failed (${ref.pointer}): ${err instanceof Error ? err.message : String(err)}`
+        `Image resolve failed (${safePointerScheme}): ${sanitizeUpstreamLogDetail(err)}`
       );
     }
   }
@@ -1712,7 +1715,7 @@ function buildStreamingResponse(
                     choices: [
                       {
                         index: 0,
-                        delta: { content: `[Error: ${chunk.error}]` },
+                        delta: { content: `[Error: ${sanitizeUpstreamLogDetail(chunk.error)}]` },
                         finish_reason: null,
                         logprobs: null,
                       },
@@ -1803,10 +1806,7 @@ function buildStreamingResponse(
               const polled = await pollAsyncImage(conversationId);
               if (polled.length > 0) imagePointers = polled;
             } catch (err) {
-              log?.warn?.(
-                "CGPT-WEB",
-                `Async image poll failed: ${err instanceof Error ? err.message : String(err)}`
-              );
+              log?.warn?.("CGPT-WEB", `Async image poll failed: ${sanitizeUpstreamLogDetail(err)}`);
             } finally {
               stopHb();
             }
@@ -1902,7 +1902,7 @@ function buildStreamingResponse(
                   {
                     index: 0,
                     delta: {
-                      content: `[Stream error: ${err instanceof Error ? err.message : String(err)}]`,
+                      content: `[Stream error: ${sanitizeCaughtError(err)}]`,
                     },
                     finish_reason: "stop",
                     logprobs: null,
@@ -1954,7 +1954,11 @@ async function buildNonStreamingResponse(
     if (chunk.error) {
       return new Response(
         JSON.stringify({
-          error: { message: chunk.error, type: "upstream_error", code: "CHATGPT_ERROR" },
+          error: {
+            message: sanitizeUpstreamLogDetail(chunk.error),
+            type: "upstream_error",
+            code: "CHATGPT_ERROR",
+          },
         }),
         { status: 502, headers: { "Content-Type": "application/json" } }
       );
@@ -2013,10 +2017,7 @@ async function buildNonStreamingResponse(
       const polled = await pollAsyncImage(conversationId);
       if (polled.length > 0) imagePointers = polled;
     } catch (err) {
-      log?.warn?.(
-        "CGPT-WEB",
-        `Async image poll failed: ${err instanceof Error ? err.message : String(err)}`
-      );
+      log?.warn?.("CGPT-WEB", `Async image poll failed: ${sanitizeUpstreamLogDetail(err)}`);
     }
   }
 
@@ -2037,7 +2038,9 @@ async function buildNonStreamingResponse(
   );
   if (imageResolutionFailed && log?.warn) {
     const schemes = (imagePointers ?? [])
-      .map((p) => p.pointer.split("://")[0] || p.pointer.slice(0, 24))
+      .map((p) => {
+        return safeAssetPointerScheme(p.pointer);
+      })
       .join(", ");
     log.warn(
       "CGPT-WEB",
@@ -2078,9 +2081,74 @@ async function buildNonStreamingResponse(
 
 function errorResponse(status: number, message: string, code?: string): Response {
   return new Response(
-    JSON.stringify({ error: { message, type: "upstream_error", ...(code ? { code } : {}) } }),
+    JSON.stringify({
+      error: {
+        message: sanitizeErrorMessage(message),
+        type: "upstream_error",
+        ...(code ? { code } : {}),
+      },
+    }),
     { status, headers: { "Content-Type": "application/json" } }
   );
+}
+
+function sanitizeCaughtError(err: unknown): string {
+  return sanitizeUpstreamLogDetail(err);
+}
+
+const UPSTREAM_LOG_DETAIL_MAX_CHARS = 300;
+const UPSTREAM_LOG_URL_PATTERN = /(?:https?|wss?):\/\/[^\s"'<>]+/giu;
+
+function sanitizeUpstreamLogDetail(
+  value: unknown,
+  fallback = "upstream error unavailable"
+): string {
+  let raw = value;
+  try {
+    if (value instanceof Error) raw = value.message;
+  } catch {
+    // A rejected Proxy may throw while instanceof walks its prototype chain.
+  }
+  const sanitized = sanitizeErrorMessage(raw).replace(UPSTREAM_LOG_URL_PATTERN, "<url>").trim();
+  return sanitized ? sanitized.slice(0, UPSTREAM_LOG_DETAIL_MAX_CHARS) : fallback;
+}
+
+function isTlsClientUnavailableError(error: unknown): error is TlsClientUnavailableError {
+  try {
+    return error instanceof TlsClientUnavailableError;
+  } catch {
+    // Hostile prototype access must degrade to the generic connection error.
+    return false;
+  }
+}
+
+function isSessionAuthError(error: unknown): error is SessionAuthError {
+  try {
+    return error instanceof SessionAuthError;
+  } catch {
+    // Hostile prototype access must degrade to the generic session error.
+    return false;
+  }
+}
+
+function isSentinelBlockedError(error: unknown): error is SentinelBlockedError {
+  try {
+    return error instanceof SentinelBlockedError;
+  } catch {
+    // Hostile prototype access must degrade to the generic Sentinel error.
+    return false;
+  }
+}
+
+function sanitizeOpaqueLogId(value: string | null | undefined): string {
+  return value?.trim() ? "<id>" : "unknown";
+}
+
+function safeAssetPointerScheme(pointer: string): string {
+  const separator = pointer.indexOf("://");
+  if (separator <= 0) return "unknown";
+  const scheme = pointer.slice(0, separator).toLowerCase();
+  return /^[a-z][a-z0-9+.-]{0,31}$/.test(scheme) ? scheme : "unknown";
 }
 
 function normalizePublicBaseUrl(value?: string | null): string | null {
@@ -2148,10 +2216,14 @@ function derivePublicBaseUrl(
   const configuredBase =
     normalizePublicBaseUrl(process.env.OMNIROUTE_BASE_URL) ||
     normalizePublicBaseUrl(process.env.NEXT_PUBLIC_BASE_URL);
+  const safeConfiguredBase = configuredBase
+    ? sanitizeUpstreamLogDetail(configuredBase, "unavailable")
+    : "-";
+  const safeHeaderBase = headerBase ? sanitizeUpstreamLogDetail(headerBase, "unavailable") : "-";
 
   log?.debug?.(
     "CGPT-WEB",
-    `derivePublicBaseUrl: configured=${configuredBase ?? "-"} header=${headerBase ?? "-"}`
+    `derivePublicBaseUrl: configured=${safeConfiguredBase} header=${safeHeaderBase}`
   );
 
   if (configuredBase && (!headerBase || !isLocalBaseUrl(configuredBase))) return configuredBase;
@@ -2210,10 +2282,7 @@ async function fetchDownloadUrl(endpoint: string, ctx: ResolverContext): Promise
     signal: ctx.signal,
   });
   if (response.status !== 200) {
-    ctx.log?.warn?.(
-      "CGPT-WEB",
-      `Image download URL fetch failed (${response.status}) for ${endpoint}`
-    );
+    ctx.log?.warn?.("CGPT-WEB", `Image download URL fetch failed (${response.status})`);
     return null;
   }
   let parsed: { download_url?: string } = {};
@@ -2263,17 +2332,16 @@ async function imageUrlToCachedImageUrl(
       byteResponse: true,
     });
   } catch (err) {
-    ctx.log?.warn?.(
-      "CGPT-WEB",
-      `Image fetch failed: ${err instanceof Error ? err.message : String(err)}`
-    );
+    ctx.log?.warn?.("CGPT-WEB", `Image fetch failed: ${sanitizeUpstreamLogDetail(err)}`);
     return null;
   }
 
   if (response.status !== 200) {
     ctx.log?.warn?.(
       "CGPT-WEB",
-      `Image fetch returned HTTP ${response.status} (${(response.text || "").slice(0, 120)})`
+      `Image fetch returned HTTP ${response.status} (${sanitizeUpstreamLogDetail(
+        (response.text || "").slice(0, 120)
+      )})`
     );
     return null;
   }
@@ -2370,9 +2438,10 @@ async function registerWebSocket(ctx: ResolverContext): Promise<string | null> {
         signal: ctx.signal,
       });
     } catch (err) {
+      const safeUrl = sanitizeUpstreamLogDetail(url, "ChatGPT WebSocket endpoint");
       ctx.log?.warn?.(
         "CGPT-WEB",
-        `register-websocket fetch failed for ${url}: ${err instanceof Error ? err.message : String(err)}`
+        `register-websocket fetch failed for ${safeUrl}: ${sanitizeUpstreamLogDetail(err)}`
       );
       continue;
     }
@@ -2384,7 +2453,10 @@ async function registerWebSocket(ctx: ResolverContext): Promise<string | null> {
         };
         const ws = data.websocket_url ?? data.wss_url;
         if (ws) {
-          ctx.log?.debug?.("CGPT-WEB", `Got WebSocket URL via ${url}`);
+          ctx.log?.debug?.(
+            "CGPT-WEB",
+            `Got WebSocket URL via ${sanitizeUpstreamLogDetail(url, "ChatGPT WebSocket endpoint")}`
+          );
           return ws;
         }
       } catch {
@@ -2394,7 +2466,10 @@ async function registerWebSocket(ctx: ResolverContext): Promise<string | null> {
     }
     ctx.log?.warn?.(
       "CGPT-WEB",
-      `register-websocket via ${url} → ${r.status}: ${(r.text || "").slice(0, 200)}`
+      `register-websocket via ${sanitizeUpstreamLogDetail(
+        url,
+        "ChatGPT WebSocket endpoint"
+      )} → ${r.status}: ${sanitizeUpstreamLogDetail((r.text || "").slice(0, 200))}`
     );
   }
   return null;
@@ -2453,7 +2528,13 @@ async function waitForImageViaWebSocket(
     };
     ws.onerror = (e) => {
       errored = true;
-      ctx.log?.warn?.("CGPT-WEB", `WebSocket error: ${(e as ErrorEvent).message ?? "unknown"}`);
+      ctx.log?.warn?.(
+        "CGPT-WEB",
+        `WebSocket error: ${sanitizeUpstreamLogDetail(
+          (e as ErrorEvent).message,
+          "upstream error unavailable"
+        )}`
+      );
     };
     ws.onclose = () => {
       clearTimeout(timer);
@@ -2653,7 +2734,10 @@ function makeImageResolver(ctx: ResolverContext): ImageResolver {
     } else if (assetPointer.startsWith(SEDIMENT_PREFIX)) {
       fileId = assetPointer.slice(SEDIMENT_PREFIX.length);
     } else {
-      ctx.log?.warn?.("CGPT-WEB", `Unknown asset_pointer scheme: ${assetPointer}`);
+      ctx.log?.warn?.(
+        "CGPT-WEB",
+        `Unknown asset_pointer scheme: ${safeAssetPointerScheme(assetPointer)}`
+      );
     }
 
     let signedUrl: string | null = null;
@@ -2703,7 +2787,10 @@ function makeImageResolver(ctx: ResolverContext): ImageResolver {
       const preview = finalUrl.startsWith("data:")
         ? `data:... (${finalUrl.length} chars)`
         : finalUrl.slice(0, 80) + "...";
-      ctx.log?.debug?.("CGPT-WEB", `Resolved ${assetPointer} → ${preview}`);
+      ctx.log?.debug?.(
+        "CGPT-WEB",
+        `Resolved ${safeAssetPointerScheme(assetPointer)} asset → ${sanitizeUpstreamLogDetail(preview, "local image URL unavailable")}`
+      );
     }
     return finalUrl;
   };
@@ -2768,8 +2855,8 @@ export class ChatGptWebExecutor extends BaseExecutor {
     try {
       tokenEntry = await exchangeSession(cookie, signal);
     } catch (err) {
-      if (err instanceof SessionAuthError) {
-        log?.warn?.("CGPT-WEB", err.message);
+      if (isSessionAuthError(err)) {
+        log?.warn?.("CGPT-WEB", sanitizeCaughtError(err));
         return {
           response: errorResponse(
             401,
@@ -2781,15 +2868,10 @@ export class ChatGptWebExecutor extends BaseExecutor {
           transformedBody: body,
         };
       }
-      log?.error?.(
-        "CGPT-WEB",
-        `Session exchange failed: ${err instanceof Error ? err.message : String(err)}`
-      );
+      const safeErrorMessage = sanitizeCaughtError(err);
+      log?.error?.("CGPT-WEB", `Session exchange failed: ${safeErrorMessage}`);
       return {
-        response: errorResponse(
-          502,
-          `ChatGPT session exchange failed: ${err instanceof Error ? err.message : String(err)}`
-        ),
+        response: errorResponse(502, `ChatGPT session exchange failed: ${safeErrorMessage}`),
         url: SESSION_URL,
         headers: {},
         transformedBody: body,
@@ -2802,10 +2884,7 @@ export class ChatGptWebExecutor extends BaseExecutor {
       try {
         await onCredentialsRefreshed?.(updated);
       } catch (err) {
-        log?.warn?.(
-          "CGPT-WEB",
-          `Failed to persist refreshed cookie: ${err instanceof Error ? err.message : String(err)}`
-        );
+        log?.warn?.("CGPT-WEB", `Failed to persist refreshed cookie: ${sanitizeCaughtError(err)}`);
       }
     }
 
@@ -2816,7 +2895,7 @@ export class ChatGptWebExecutor extends BaseExecutor {
     } catch (err) {
       log?.warn?.(
         "CGPT-WEB",
-        `DPL warmup failed (continuing with fallback): ${err instanceof Error ? err.message : String(err)}`
+        `DPL warmup failed (continuing with fallback): ${sanitizeCaughtError(err)}`
       );
       dplInfo = {
         dpl: `dpl=${OAI_CLIENT_VERSION.replace(/^prod-/, "")}`,
@@ -2855,8 +2934,8 @@ export class ChatGptWebExecutor extends BaseExecutor {
         log
       );
     } catch (err) {
-      if (err instanceof SentinelBlockedError) {
-        log?.warn?.("CGPT-WEB", err.message);
+      if (isSentinelBlockedError(err)) {
+        log?.warn?.("CGPT-WEB", sanitizeCaughtError(err));
         return {
           response: errorResponse(
             403,
@@ -2868,15 +2947,10 @@ export class ChatGptWebExecutor extends BaseExecutor {
           transformedBody: body,
         };
       }
-      log?.error?.(
-        "CGPT-WEB",
-        `Sentinel failed: ${err instanceof Error ? err.message : String(err)}`
-      );
+      const safeErrorMessage = sanitizeCaughtError(err);
+      log?.error?.("CGPT-WEB", `Sentinel failed: ${safeErrorMessage}`);
       return {
-        response: errorResponse(
-          502,
-          `ChatGPT sentinel failed: ${err instanceof Error ? err.message : String(err)}`
-        ),
+        response: errorResponse(502, `ChatGPT sentinel failed: ${safeErrorMessage}`),
         url: SENTINEL_PREPARE_URL,
         headers: {},
         transformedBody: body,
@@ -2980,14 +3054,11 @@ export class ChatGptWebExecutor extends BaseExecutor {
         stream,
       });
     } catch (err) {
-      log?.error?.("CGPT-WEB", `Fetch failed: ${err instanceof Error ? err.message : String(err)}`);
-      const code = err instanceof TlsClientUnavailableError ? "TLS_UNAVAILABLE" : undefined;
+      const safeErrorMessage = sanitizeCaughtError(err);
+      log?.error?.("CGPT-WEB", `Fetch failed: ${safeErrorMessage}`);
+      const code = isTlsClientUnavailableError(err) ? "TLS_UNAVAILABLE" : undefined;
       return {
-        response: errorResponse(
-          502,
-          `ChatGPT connection failed: ${err instanceof Error ? err.message : String(err)}`,
-          code
-        ),
+        response: errorResponse(502, `ChatGPT connection failed: ${safeErrorMessage}`, code),
         url: CONV_URL,
         headers,
         transformedBody: cgptBody,
@@ -2999,7 +3070,8 @@ export class ChatGptWebExecutor extends BaseExecutor {
       // Log the upstream body on 4xx/5xx — error responses are small and the
       // upstream message is much more useful than our wrapper. Goes through
       // the executor logger so it respects the application's log config.
-      log?.warn?.("CGPT-WEB", `conv ${status}: ${(response.text || "").slice(0, 400)}`);
+      const safeUpstreamSnippet = sanitizeUpstreamLogDetail((response.text || "").slice(0, 400));
+      log?.warn?.("CGPT-WEB", `conv ${status}: ${safeUpstreamSnippet}`);
       const errMsg = describeChatGptWebHttpError(status);
       if (status === 401 || status === 403) {
         tokenCache.delete(cookieKey(cookie));

@@ -58,8 +58,8 @@ test("upstream error passthrough", async (t) => {
   await t.test(
     "corpo de capacidade/quota sem segredo continua elegível (contrato Claude Code preservado)",
     () => {
-      // The common case must still relay verbatim so Claude Code can match the
-      // wording to auto-disable capabilities.
+      // Safe wording/shape must survive canonical sanitization so Claude Code
+      // can still match the response and auto-disable capabilities.
       assert.equal(
         shouldPassthroughUpstreamError(400, {
           error: { message: "thinking.type: adaptive is not supported" },
@@ -74,7 +74,7 @@ test("upstream error passthrough", async (t) => {
       );
     }
   );
-  await t.test("buildPassthroughErrorResponse preserva corpo byte-a-byte", async () => {
+  await t.test("buildPassthroughErrorResponse preserva wording e shape seguros", async () => {
     const body = {
       type: "error",
       error: { type: "invalid_request_error", message: "thinking.type: nope" },
@@ -84,14 +84,66 @@ test("upstream error passthrough", async (t) => {
     assert.equal(res.status, 400);
     assert.deepEqual(await res.json(), body);
   });
+  await t.test(
+    "buildPassthroughErrorResponse sanitiza recursivamente corpo elegível e preserva metadados",
+    async () => {
+      const body = {
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: "password=hunter2",
+          details: [
+            "failed opening /home/alice/private.ts:1:2",
+            {
+              trace: "Error\r\n    at C:\\Users\\alice\\private.ts:1:2",
+              credential: "PASSTHROUGH_CREDENTIAL_SECRET",
+              sessionId: "PASSTHROUGH_SESSION_SECRET",
+              session_count: 2,
+            },
+          ],
+        },
+      };
+
+      assert.equal(shouldPassthroughUpstreamError(422, body), true);
+      const res = buildPassthroughErrorResponse(422, body, { "X-Test": "preserved" });
+      assert.ok(res, "eligible safe-shape body remains passthrough-capable");
+      assert.equal(res.status, 422);
+      assert.equal(res.headers.get("X-Test"), "preserved");
+      const sanitized = await res.json();
+      const serialized = JSON.stringify(sanitized);
+      assert.equal(sanitized.type, "error");
+      assert.equal(sanitized.error.type, "invalid_request_error");
+      assert.ok(!serialized.includes("hunter2"));
+      assert.ok(!serialized.includes("/home/alice"));
+      assert.ok(!serialized.includes("C:\\Users\\alice"));
+      assert.ok(!serialized.includes("    at "));
+      assert.ok(!serialized.includes("PASSTHROUGH_CREDENTIAL_SECRET"));
+      assert.ok(!serialized.includes("PASSTHROUGH_SESSION_SECRET"));
+      assert.ok(serialized.includes('"session_count":2'));
+    }
+  );
   await t.test("retorna null quando inelegível", () => {
     assert.equal(buildPassthroughErrorResponse(500, {}), null);
+  });
+  await t.test("corpos não serializáveis falham fechados sem lançar", () => {
+    const cyclic: Record<string, unknown> = { error: { message: "safe" } };
+    cyclic.self = cyclic;
+    const throwing = {
+      toJSON(): never {
+        throw new Error("hostile toJSON");
+      },
+    };
+
+    for (const body of [cyclic, { value: 1n }, throwing]) {
+      assert.equal(shouldPassthroughUpstreamError(400, body), false);
+      assert.equal(buildPassthroughErrorResponse(400, body), null);
+    }
   });
 });
 
 test("createErrorResult opt-in passthrough (opts.passthrough)", async (t) => {
   await t.test(
-    "com opts.passthrough e corpo elegível, result.response é o corpo upstream verbatim",
+    "com opts.passthrough, wording e shape seguros sobrevivem à sanitização",
     async () => {
       const { createErrorResult } = await import("../../open-sse/utils/error.ts");
       const upstreamBody = {

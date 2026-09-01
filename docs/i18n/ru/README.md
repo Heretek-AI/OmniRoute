@@ -354,13 +354,13 @@ Combo: "always-on"                         strategy: priority
 
 </div>
 
-> Ваши ключи, ваша машина, ваши данные. OmniRoute — **локальный прокси**, без «звонков домой».
+> Ваши ключи, ваша машина, ваши данные. OmniRoute не добавляет этап обработки промптов, размещённый на инфраструктуре OmniRoute; телеметрия по умолчанию отключена.
 
-- 🏠 **100% на вашем железе** — npm, Docker, desktop или телефон. Нет cloud-hop OmniRoute.
+- 🏠 **Роутинг выполняется локально** — npm, Docker, desktop или телефон; выбранные провайдеры остаются внешними upstream-сервисами.
 - 🔐 **Credentials at rest** — API keys и OAuth в **AES-256-GCM**.
-- 🚫 **Zero telemetry по умолчанию** — промпты уходят только выбранным провайдерам.
+- 🚫 **Телеметрия по умолчанию отключена** — включается только при явной настройке.
 - 🛡️ **Жёсткий gateway** — scoping ключей, IP filter, rate limits, prompt-injection guard, loopback-only process routes.
-- 📜 **MIT, fully open-source** — аудируйте построчно, self-host навсегда.
+- 📜 **Собственный код OmniRoute — MIT** — проект открыт; включённые сторонние компоненты сохраняют свои лицензии. Смотрите `THIRD_PARTY_NOTICES.md`.
 
 <sub>📖 [Authorization](../../architecture/AUTHZ_GUIDE.md) · [Guardrails](../../security/GUARDRAILS.md) · [Compliance](../../security/COMPLIANCE.md)</sub>
 

@@ -6,6 +6,32 @@
  * directories out of the staged dist/ tree and out of the final tarball.
  */
 
+import {
+  resolveTlsClientNativeAsset,
+  TLS_CLIENT_NATIVE_ASSETS,
+} from "./fixTlsClientNodeBinary.mjs";
+
+export function resolveTlsClientRuntimeSeedPath(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch
+): string {
+  const asset = resolveTlsClientNativeAsset(platform, arch);
+  return `runtime-assets/tls-client/bin/${asset.file}`;
+}
+
+export const TLS_CLIENT_RUNTIME_SEED_PATHS: string[] = Object.keys(TLS_CLIENT_NATIVE_ASSETS)
+  .sort()
+  .map((target) => {
+    const separatorIndex = target.indexOf("-");
+    if (separatorIndex <= 0 || separatorIndex === target.length - 1) {
+      throw new Error(`Invalid tls-client native manifest target: ${target}`);
+    }
+    return resolveTlsClientRuntimeSeedPath(
+      target.slice(0, separatorIndex) as NodeJS.Platform,
+      target.slice(separatorIndex + 1)
+    );
+  });
+
 const STAGING_FORBIDDEN_DIRECTORIES = [
   "app.__qa_backup",
   "coverage",
@@ -34,6 +60,8 @@ export const APP_STAGING_REMOVAL_PATHS: string[] = [
 export const APP_STAGING_ALLOWED_EXACT_PATHS: string[] = [
   ".env.example",
   "BUILD_SHA",
+  "LICENSE",
+  "THIRD_PARTY_NOTICES.md",
   "docs/openapi.yaml",
   // #7065: imported by dist/server-ws.mjs; assembleStandalone copies it but without
   // this bare entry the prepublish prune deleted it → every `omniroute` boot of the
@@ -50,6 +78,7 @@ export const APP_STAGING_ALLOWED_EXACT_PATHS: string[] = [
   "package.json",
   "peer-stamp.mjs",
   "main-server-timeouts.mjs",
+  "open-sse/config/tlsClientNativeManifest.json",
   // server-ws.mjs import (sd_notify helper) — enforced by the closure test
   // tests/unit/pack-artifact-server-ws-closure.test.ts.
   "systemd-notify.mjs",
@@ -64,6 +93,7 @@ export const APP_STAGING_ALLOWED_EXACT_PATHS: string[] = [
   // this bare entry the prepublish prune (Step 10.7) deletes it → `omniroute serve`
   // crashes with ERR_MODULE_NOT_FOUND (regressed in the published 3.8.41 tarball).
   "tls-options.mjs",
+  ...TLS_CLIENT_RUNTIME_SEED_PATHS,
   "webdav-handler.mjs",
 ];
 
@@ -131,6 +161,8 @@ export const PACK_ARTIFACT_ROOT_ALLOWED_EXACT_PATHS: string[] = [
   "open-sse/utils/setupPolyfill.ts",
   "package.json",
   "scripts/build/assembleStandalone.mjs",
+  "scripts/build/standaloneSidecarCopy.mjs",
+  "scripts/build/tlsClientAssetCopy.mjs",
   "scripts/build/backendOnlyPages.mjs",
   "scripts/build/build-tproxy-native.mjs",
   "scripts/build/build-next-isolated.mjs",
@@ -179,6 +211,9 @@ export const PACK_ARTIFACT_ROOT_ALLOWED_PATH_PREFIXES: string[] = [
 ];
 
 export const PACK_ARTIFACT_REQUIRED_PATHS: string[] = [
+  "dist/LICENSE",
+  "dist/THIRD_PARTY_NOTICES.md",
+  "dist/open-sse/config/tlsClientNativeManifest.json",
   "dist/open-sse/services/compression/engines/rtk/filters/generic-output.json",
   "dist/src/lib/usage/callLogArtifactWorker.js",
   "dist/open-sse/vendor/codex-chatgpt-web/adapters/chatgpt-web/mcp-server.js",
@@ -191,6 +226,7 @@ export const PACK_ARTIFACT_REQUIRED_PATHS: string[] = [
   // server-ws.mjs import (sd_notify helper) — enforced by the closure test.
   "dist/systemd-notify.mjs",
   "dist/http-method-guard.cjs",
+  ...TLS_CLIENT_RUNTIME_SEED_PATHS.map((seedPath) => `dist/${seedPath}`),
   // #5452: regression guard — make check:pack-artifact fail loudly if the TLS
   // opt-in sidecar (imported by dist/server-ws.mjs) ever vanishes from the tarball.
   "dist/tls-options.mjs",
@@ -229,6 +265,8 @@ export const PACK_ARTIFACT_REQUIRED_PATHS: string[] = [
   "scripts/build/colocateOptionals.mjs",
   "scripts/build/fixTlsClientNodeBinary.mjs",
   "scripts/build/runtime-env.mjs",
+  "scripts/build/standaloneSidecarCopy.mjs",
+  "scripts/build/tlsClientAssetCopy.mjs",
   // #10382: runtime imports of bin/cli/commands/packs.mjs (optional packs CLI) —
   // listed REQUIRED so their absence from the tarball fails loudly.
   "scripts/packs/optionalPackInstaller.mjs",

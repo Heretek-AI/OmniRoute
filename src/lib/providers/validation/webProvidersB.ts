@@ -1,17 +1,11 @@
 // Web-cookie provider key validators (part B): muse-spark-web, adapta-web, claude-web, gemini-web,
 // copilot-web, t3-web, jules, devin (cloud-agent), inner-ai. Extracted from validation.ts (god-file
-// decomposition) — top-level functions with no dispatcher-state captures; behavior is byte-identical
-// to the inline defs.
-import { applyCustomUserAgent } from "./headers";
-import {
-  isSecurityBlockError,
-  toValidationErrorResult,
-  validationRead,
-  validationWrite,
-} from "./transport";
-import { SafeOutboundFetchError } from "@/shared/network/safeOutboundFetch";
-import { normalizeSessionCookieHeader } from "@/lib/providers/webCookieAuth";
+// decomposition) — top-level functions with no dispatcher-state captures; behavior is
+// regression-tested in this module.
+import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error.ts";
 import { buildJulesApiUrl } from "@/lib/cloudAgent/julesApi.ts";
+import { normalizeSessionCookieHeader } from "@/lib/providers/webCookieAuth";
+import { applyCustomUserAgent } from "./headers";
 import {
   META_AI_ASBD_ID,
   META_AI_FRIENDLY_NAME,
@@ -19,6 +13,39 @@ import {
   META_AI_USER_AGENT,
   buildMetaAiValidationBody,
 } from "./metaAi";
+import {
+  isSafeOutboundFetchError,
+  isSecurityBlockError,
+  toValidationErrorResult,
+  validationRead,
+  validationWrite,
+} from "./transport";
+
+interface ErrorInstanceClassifier {
+  [Symbol.hasInstance](value: unknown): boolean;
+}
+
+function isErrorInstance(error: unknown, classifier: ErrorInstanceClassifier): boolean {
+  try {
+    return classifier[Symbol.hasInstance](error);
+  } catch {
+    // A rejected Proxy may throw while the classifier walks its prototype chain.
+    return false;
+  }
+}
+
+function sanitizeValidationThrownError(error: unknown): string {
+  let candidate = error;
+  try {
+    if (isErrorInstance(error, Error)) {
+      const message = (error as { message?: unknown }).message;
+      if (typeof message === "string") candidate = message;
+    }
+  } catch {
+    // Keep the unknown value for the canonical fail-closed sanitizer.
+  }
+  return sanitizeErrorMessage(candidate);
+}
 
 export async function validateMuseSparkWebProvider({ apiKey, providerSpecificData = {} }: any) {
   try {
@@ -166,11 +193,11 @@ export async function validateClaudeWebProvider({ apiKey, providerSpecificData =
         ),
         timeoutMs: 30_000,
       });
-    } catch (err: any) {
-      if (err instanceof TlsClientUnavailableError) {
+    } catch (err: unknown) {
+      if (isErrorInstance(err, TlsClientUnavailableError)) {
         return {
           valid: false,
-          error: `${err.message} (claude-web requires this — without it, Cloudflare blocks every request)`,
+          error: `${sanitizeValidationThrownError(err)} (claude-web requires this — without it, Cloudflare blocks every request)`,
         };
       }
       throw err;
@@ -261,12 +288,22 @@ export async function validateGeminiWebProvider({ apiKey, providerSpecificData =
     //   - accounts.google.com/ServiceLogin — expired session → valid:false
     //   - other accounts.google.com paths — ambiguous, warn but treat as valid
     //   - non-Google redirects (e.g. gemini.google.com redirect loop) — valid
-    if (
-      error instanceof SafeOutboundFetchError &&
-      error.code === "REDIRECT_BLOCKED" &&
-      !isSecurityBlockError(error)
-    ) {
-      const location = error.location ?? "";
+    let publicRedirect: { location: string } | null = null;
+    try {
+      if (
+        isSafeOutboundFetchError(error) &&
+        error.code === "REDIRECT_BLOCKED" &&
+        !isSecurityBlockError(error)
+      ) {
+        publicRedirect = {
+          location: typeof error.location === "string" ? error.location : "",
+        };
+      }
+    } catch {
+      // Hostile redirect metadata must degrade to the generic validation failure below.
+    }
+    if (publicRedirect) {
+      const { location } = publicRedirect;
       if (/accounts\.google\.com\/.*ServiceLogin/i.test(location)) {
         return {
           valid: false,
@@ -509,7 +546,7 @@ export async function validateJulesProvider({ apiKey }: { apiKey: string }) {
     const errorText = await response.text().catch(() => "");
     return {
       valid: false,
-      error: errorText.trim() || `Jules API returned ${response.status}`,
+      error: sanitizeErrorMessage(errorText.trim()) || `Jules API returned ${response.status}`,
     };
   } catch (error: unknown) {
     return toValidationErrorResult(error);
@@ -541,7 +578,7 @@ export async function validateDevinCloudAgentProvider({ apiKey }: { apiKey: stri
     const errorText = await response.text().catch(() => "");
     return {
       valid: false,
-      error: errorText.trim() || `Devin API returned ${response.status}`,
+      error: sanitizeErrorMessage(errorText.trim()) || `Devin API returned ${response.status}`,
     };
   } catch (error: unknown) {
     return toValidationErrorResult(error);
@@ -599,7 +636,10 @@ export async function validateNotionWebProvider({ apiKey, providerSpecificData =
   }
 }
 
-export async function validateInnerAiProvider({ apiKey, providerSpecificData = {} }: any) {
+export async function validateInnerAiProvider({
+  apiKey,
+  providerSpecificData: _providerData = {},
+}: any) {
   try {
     const raw = typeof apiKey === "string" ? apiKey.trim() : "";
     if (!raw) {

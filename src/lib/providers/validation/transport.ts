@@ -1,6 +1,8 @@
 // Outbound fetch wrappers for provider validation: proxy-fallback, SSRF-aware proxy targeting, and
-// error→result mapping. Extracted from validation.ts (god-file decomposition). Behavior is
-// byte-identical to the original inline defs.
+// error→result mapping. Extracted from validation.ts (god-file decomposition) and kept as the
+// common boundary for sanitizing validation failures.
+import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error.ts";
+import { selectProxyForValidation } from "@omniroute/open-sse/services/proxyAutoSelector.ts";
 import {
   SAFE_OUTBOUND_FETCH_PRESETS,
   SafeOutboundFetchError,
@@ -9,7 +11,22 @@ import {
 } from "@/shared/network/safeOutboundFetch";
 import { isPrivateHost } from "@/shared/network/outboundUrlGuard";
 import { getProviderValidationGuard } from "@/shared/network/outboundUrlGuardPolicy";
-import { selectProxyForValidation } from "@omniroute/open-sse/services/proxyAutoSelector.ts";
+
+export function readProxyFallbackErrorState(error: unknown): {
+  isNetworkIssue: boolean;
+  isRetryable: boolean;
+} {
+  try {
+    const fetchError = error as { code?: unknown; isRetryable?: unknown } | null | undefined;
+    return {
+      isNetworkIssue: fetchError?.code === "NETWORK_ERROR" || fetchError?.code === "TIMEOUT",
+      isRetryable: fetchError?.isRetryable !== false,
+    };
+  } catch {
+    // Hostile accessors are not trustworthy enough to authorize a second outbound attempt.
+    return { isNetworkIssue: false, isRetryable: false };
+  }
+}
 
 /**
  * Wrapped fetch call that auto-retries with a proxy when the direct connection
@@ -31,9 +48,7 @@ export async function fetchWithProxyFallback(
   } catch (err: unknown) {
     // Only attempt proxy fallback for retryable errors (network / timeout)
     // and only when the target is not a local / LAN address.
-    const fetchErr = err as SafeOutboundFetchError;
-    const isNetworkIssue = fetchErr?.code === "NETWORK_ERROR" || fetchErr?.code === "TIMEOUT";
-    const isRetryable = fetchErr?.isRetryable !== false;
+    const { isNetworkIssue, isRetryable } = readProxyFallbackErrorState(err);
     const isValidTarget = !isLocal && isRetryableProxyTarget(url);
 
     if (isLocal || !isNetworkIssue || !isRetryable) throw err;
@@ -80,15 +95,15 @@ export async function validationWrite(url: string, init: RequestInit, isLocal: b
 // (#3288 / #3758). Only treat a blocked redirect as a security event when its target is
 // a private/internal host.
 export function isSecurityBlockError(error: unknown): boolean {
-  if (!(error instanceof SafeOutboundFetchError)) return false;
-  if (error.code === "URL_GUARD_BLOCKED" || error.code === "INVALID_URL") return true;
-  if (error.code === "REDIRECT_BLOCKED") {
-    if (!error.location) return false;
-    try {
+  try {
+    if (!isSafeOutboundFetchError(error)) return false;
+    if (error.code === "URL_GUARD_BLOCKED" || error.code === "INVALID_URL") return true;
+    if (error.code === "REDIRECT_BLOCKED") {
+      if (!error.location) return false;
       return isPrivateHost(new URL(error.location, error.url).hostname);
-    } catch {
-      return false;
     }
+  } catch {
+    // Hostile error prototypes/accessors are never evidence of an SSRF block.
   }
   return false;
 }
@@ -106,6 +121,15 @@ export function isSecurityBlockError(error: unknown): boolean {
 // rather than 404/405 — do not add them here without a proven repro per provider (see
 // #7542 plan-file, "Risks").
 const WEB_COOKIE_PROVIDERS_WITH_UNRELIABLE_MODELS_PROBE = new Set(["lmarena"]);
+
+export function isSafeOutboundFetchError(error: unknown): error is SafeOutboundFetchError {
+  try {
+    return error instanceof SafeOutboundFetchError;
+  } catch {
+    // A rejected Proxy may throw while instanceof walks its prototype chain.
+    return false;
+  }
+}
 
 // #7857 — web-cookie providers whose registry `baseUrl` is a conversation/completion
 // endpoint, not a real API root (e.g. huggingchat's baseUrl is
@@ -130,32 +154,49 @@ export const WEB_COOKIE_PROVIDERS_WITHOUT_MODELS_API = new Set([
 ]);
 
 export function toWebCookieValidationErrorResult(provider: string, error: unknown) {
-  if (
-    error instanceof SafeOutboundFetchError &&
-    error.code === "REDIRECT_BLOCKED" &&
-    WEB_COOKIE_PROVIDERS_WITH_UNRELIABLE_MODELS_PROBE.has(provider)
-  ) {
-    return {
-      valid: false,
-      error: "Provider validation not supported",
-      unsupported: true as const,
-    };
+  try {
+    if (
+      isSafeOutboundFetchError(error) &&
+      error.code === "REDIRECT_BLOCKED" &&
+      WEB_COOKIE_PROVIDERS_WITH_UNRELIABLE_MODELS_PROBE.has(provider)
+    ) {
+      return {
+        valid: false,
+        error: "Provider validation not supported",
+        unsupported: true as const,
+      };
+    }
+  } catch {
+    // Hostile error accessors must degrade to the generic validation result below.
   }
   return toValidationErrorResult(error);
 }
 
 export function toValidationErrorResult(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error || "Validation failed");
-  const statusCode = getSafeOutboundFetchErrorStatus(error);
+  let rawMessage: unknown = error || "Validation failed";
+  try {
+    if (error instanceof Error) rawMessage = error.message;
+  } catch {
+    rawMessage = "Validation failed";
+  }
+  const message = sanitizeErrorMessage(rawMessage);
+  let statusCode: number | null = null;
+  let timeout = false;
+  let securityBlocked = false;
+  try {
+    statusCode = getSafeOutboundFetchErrorStatus(error);
+    timeout = isSafeOutboundFetchError(error) && error.code === "TIMEOUT";
+    securityBlocked = isSecurityBlockError(error);
+  } catch {
+    // Classification is advisory; hostile accessors must not escape the safe error boundary.
+  }
 
   return {
     valid: false,
     error: message || "Validation failed",
     unsupported: false as const,
     ...(statusCode ? { statusCode } : {}),
-    ...(error instanceof SafeOutboundFetchError && error.code === "TIMEOUT"
-      ? { timeout: true }
-      : {}),
-    ...(isSecurityBlockError(error) ? { securityBlocked: true } : {}),
+    ...(timeout ? { timeout: true } : {}),
+    ...(securityBlocked ? { securityBlocked: true } : {}),
   };
 }

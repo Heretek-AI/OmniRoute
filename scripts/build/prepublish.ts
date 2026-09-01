@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 
 import { assembleStandalone } from "./assembleStandalone.mjs";
 import { isNativeExecutable, resolveLocalBinEntry } from "./buildToolRunner.mjs";
+import { fixTlsClientNodeBinary, TLS_CLIENT_NATIVE_ASSETS } from "./fixTlsClientNodeBinary.mjs";
 import { resolveBundledNpmEntry } from "./resolveNpmEntry.ts";
 import {
   APP_STAGING_ALLOWED_EXACT_PATHS,
@@ -88,6 +89,31 @@ function runBuildTool(
 
 const DIST_DIR = join(ROOT, "dist");
 const METHOD_GUARD_REQUIRE = 'require("./http-method-guard.cjs").installHttpMethodGuard();\n';
+const TLS_CLIENT_ARCHES_BY_PLATFORM = Object.keys(TLS_CLIENT_NATIVE_ASSETS).reduce<
+  Record<string, string[]>
+>((targets, target) => {
+  const separatorIndex = target.indexOf("-");
+  if (separatorIndex <= 0 || separatorIndex === target.length - 1) {
+    throw new Error(`Invalid tls-client native manifest target: ${target}`);
+  }
+  const platform = target.slice(0, separatorIndex);
+  const arch = target.slice(separatorIndex + 1);
+  (targets[platform] ??= []).push(arch);
+  return targets;
+}, {});
+
+async function verifyAllTlsClientRuntimeSeeds(targetStandaloneDir: string): Promise<void> {
+  for (const [platform, arches] of Object.entries(TLS_CLIENT_ARCHES_BY_PLATFORM)) {
+    await fixTlsClientNodeBinary({
+      rootDir: ROOT,
+      platform,
+      arches,
+      standaloneDir: targetStandaloneDir,
+      strict: true,
+      requireStandalone: true,
+    });
+  }
+}
 
 function walkFiles(dir: string, rootDir: string = dir, files: string[] = []): string[] {
   let entries: string[] = [];
@@ -169,7 +195,8 @@ if (existsSync(DIST_DIR)) {
 // .build/next/standalone artifact produced by `npm run build` (build-next-isolated.mjs).
 // If the artifact is absent we invoke it exactly once.
 const NEXT_DIST = process.env.NEXT_DIST_DIR || ".build/next";
-const standaloneServerJs = join(ROOT, NEXT_DIST, "standalone", "server.js");
+const standaloneDir = join(ROOT, NEXT_DIST, "standalone");
+const standaloneServerJs = join(standaloneDir, "server.js");
 if (!existsSync(standaloneServerJs)) {
   console.log("  🏗️  .build/next/standalone not found — running `npm run build` once...");
   execFileSync(process.execPath, ["scripts/build/build-next-isolated.mjs"], {
@@ -186,6 +213,9 @@ if (!existsSync(standaloneServerJs)) {
   }
 }
 console.log("  ✅ Standalone artifact present:", standaloneServerJs);
+
+console.log("  🔐 Verifying every pinned TLS client runtime seed...");
+await verifyAllTlsClientRuntimeSeeds(standaloneDir);
 
 // ── Step 3–7: Assemble standalone into dist/ ───────────────
 // All shared copy/sync/sanitize/chunk-patch operations are delegated to
@@ -706,6 +736,9 @@ if (remainingUnexpectedFiles.length > 0) {
   );
   process.exit(1);
 }
+
+console.log("  🔐 Re-verifying every staged TLS client runtime seed after pruning...");
+await verifyAllTlsClientRuntimeSeeds(DIST_DIR);
 
 // ── Done ───────────────────────────────────────────────────
 const distPkg = join(DIST_DIR, "package.json");

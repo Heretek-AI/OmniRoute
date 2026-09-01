@@ -8,8 +8,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import type { ExecuteInput } from "../../open-sse/executors/base.ts";
+import type { TlsFetchOptions } from "../../open-sse/services/tlsClientBase.ts";
+
 const { ChatGptWebExecutor, __resetChatGptWebCachesForTesting } =
   await import("../../open-sse/executors/chatgpt-web.ts");
+const { buildToolModeResponse } = await import("../../open-sse/executors/chatgptWebTools.ts");
 const { __setTlsFetchOverrideForTesting } =
   await import("../../open-sse/services/chatgptTlsClient.ts");
 
@@ -55,7 +59,7 @@ function convWithAssistantText(parts: string) {
 function installMockFetch(convEvents: unknown[]) {
   const calls = { urls: [] as string[], bodies: [] as unknown[] };
 
-  __setTlsFetchOverrideForTesting(async (url: string, opts: any = {}) => {
+  __setTlsFetchOverrideForTesting(async (url: string, opts: TlsFetchOptions = {}) => {
     const u = String(url);
     calls.urls.push(u);
     calls.bodies.push(opts.body);
@@ -126,15 +130,79 @@ const WEATHER_TOOL = {
 
 const TOOL_CALL_TEXT = '<tool>{"name":"get_weather","arguments":{"location":"Tokyo"}}</tool>';
 
-function baseOpts(extra: Record<string, unknown>) {
+function baseOpts(extra: Partial<ExecuteInput>): ExecuteInput {
   return {
     model: "gpt-5.5",
+    body: {},
+    stream: false,
     credentials: { apiKey: "test" },
     signal: AbortSignal.timeout(10_000),
     log: null,
     ...extra,
   };
 }
+
+test("Tool response helper preserves upstream errors before any SSE replay", async () => {
+  const body = JSON.stringify({
+    error: {
+      message: "Rate limited: access_token=[REDACTED] at <path>",
+      type: "upstream_error",
+      code: "HTTP_429",
+    },
+  });
+  const upstream = new Response(body, {
+    status: 429,
+    headers: { "Content-Type": "application/json", "Retry-After": "17" },
+  });
+
+  const response = await buildToolModeResponse(upstream, [WEATHER_TOOL], true, {
+    cid: "chatcmpl-error",
+    created: 1,
+    model: "gpt-5.5",
+  });
+
+  assert.equal(response, upstream, "the original error Response must pass through unchanged");
+  assert.equal(response.status, 429);
+  assert.equal(response.headers.get("Retry-After"), "17");
+  assert.equal(response.headers.get("Content-Type"), "application/json");
+  assert.equal(await response.text(), body);
+});
+
+test("Tools stream: ChatGPT chunk.error remains a sanitized HTTP error", async () => {
+  __resetChatGptWebCachesForTesting();
+  const m = installMockFetch([
+    {
+      error:
+        "Cannot stream /srv/private/tool-error.json access_token=sk-tool-stream\n" +
+        "    at /srv/private/tool-error.ts:1",
+    },
+  ]);
+  try {
+    const executor = new ChatGptWebExecutor();
+    const result = await executor.execute(
+      baseOpts({
+        body: {
+          messages: [{ role: "user", content: "What is the weather in Tokyo?" }],
+          tools: [WEATHER_TOOL],
+          stream: true,
+        },
+        stream: true,
+      })
+    );
+
+    assert.equal(result.response.status, 502);
+    assert.equal(result.response.headers.get("Content-Type"), "application/json");
+    const body = await result.response.json();
+    assert.deepEqual(body.error, {
+      message: "Cannot stream <path>",
+      type: "upstream_error",
+      code: "CHATGPT_ERROR",
+    });
+    assert.doesNotMatch(JSON.stringify(body), /\/srv\/private|sk-tool-stream|tool-error\.ts/);
+  } finally {
+    m.restore();
+  }
+});
 
 test("Tools request-side: <tool> contract is serialized into the upstream system message (#5240)", async () => {
   __resetChatGptWebCachesForTesting();
@@ -148,13 +216,18 @@ test("Tools request-side: <tool> contract is serialized into the upstream system
           tools: [WEATHER_TOOL],
         },
         stream: false,
-      }) as any
+      })
     );
 
     const convIdx = m.calls.urls.findIndex((u) => u.endsWith("/backend-api/f/conversation"));
     assert.ok(convIdx >= 0, "conversation endpoint was hit");
-    const convBody = JSON.parse(m.calls.bodies[convIdx] as string);
-    const systemMsg = convBody.messages.find((mm: any) => mm.author.role === "system");
+    const convBody = JSON.parse(m.calls.bodies[convIdx] as string) as {
+      messages: Array<{
+        author: { role: string };
+        content: { parts: string[] };
+      }>;
+    };
+    const systemMsg = convBody.messages.find((message) => message.author.role === "system");
     assert.ok(systemMsg, "a system message carrying the tool contract was sent");
     const systemText = systemMsg.content.parts.join("");
     assert.match(systemText, /<tool>/, "system prompt instructs the model to emit <tool> blocks");
@@ -176,7 +249,7 @@ test("Tools non-stream: <tool>{...}</tool> text becomes OpenAI tool_calls + fini
           tools: [WEATHER_TOOL],
         },
         stream: false,
-      }) as any
+      })
     );
 
     assert.equal(result.response.status, 200);
@@ -207,7 +280,7 @@ test("Tools stream: terminal chunk carries delta.tool_calls + finish_reason tool
           stream: true,
         },
         stream: true,
-      }) as any
+      })
     );
 
     assert.equal(result.response.status, 200);
@@ -242,7 +315,7 @@ test("Tools regression: no-tools request still streams plain content with finish
       baseOpts({
         body: { messages: [{ role: "user", content: "hi" }], stream: true },
         stream: true,
-      }) as any
+      })
     );
 
     const text = await result.response.text();

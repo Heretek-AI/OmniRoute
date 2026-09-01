@@ -1,9 +1,7 @@
 // Web-cookie provider key validators (part A): deepseek-web, qwen-web, grok-web, chatgpt-web,
 // perplexity-web, blackbox-web. Extracted from validation.ts (god-file decomposition) — top-level
-// functions with no dispatcher-state captures; behavior is byte-identical to the original inline defs.
-import { addModelsSuffix } from "./urlHelpers";
-import { applyCustomUserAgent } from "./headers";
-import { toValidationErrorResult, validationRead, validationWrite } from "./transport";
+// functions with no dispatcher-state captures; behavior is regression-tested in this module.
+import { sanitizeErrorMessage, sanitizeUpstreamDetails } from "@omniroute/open-sse/utils/error.ts";
 import {
   buildGrokCookieHeader,
   buildQwenCookieHeader,
@@ -12,6 +10,34 @@ import {
   extractQwenToken,
   normalizeSessionCookieHeader,
 } from "@/lib/providers/webCookieAuth";
+import { applyCustomUserAgent } from "./headers";
+import { toValidationErrorResult, validationRead, validationWrite } from "./transport";
+
+interface ErrorInstanceClassifier {
+  [Symbol.hasInstance](value: unknown): boolean;
+}
+
+function isErrorInstance(error: unknown, classifier: ErrorInstanceClassifier): boolean {
+  try {
+    return classifier[Symbol.hasInstance](error);
+  } catch {
+    // A rejected Proxy may throw while the classifier walks its prototype chain.
+    return false;
+  }
+}
+
+function sanitizeValidationThrownError(error: unknown): string {
+  let candidate = error;
+  try {
+    if (isErrorInstance(error, Error)) {
+      const message = (error as { message?: unknown }).message;
+      if (typeof message === "string") candidate = message;
+    }
+  } catch {
+    // Keep the unknown value for the canonical fail-closed sanitizer.
+  }
+  return sanitizeErrorMessage(candidate);
+}
 
 // kimi-web uses the international (west-facing) `www.kimi.ai` Connect-RPC API by
 // default. `www.kimi.com` is the China-region endpoint — it serves China users but
@@ -144,7 +170,7 @@ export async function validateDeepSeekWebProvider({ apiKey }: any) {
     if (!bizData?.token) {
       return {
         valid: false,
-        error: `DeepSeek did not return an access token: ${json?.msg || "unknown error"}`,
+        error: `DeepSeek did not return an access token: ${sanitizeErrorMessage(json?.msg) || "unknown error"}`,
       };
     }
     return { valid: true, error: null };
@@ -254,7 +280,7 @@ export async function validateQwenWebProvider({ apiKey }: any) {
             "Qwen session token is invalid or expired — re-login at https://chat.qwen.ai and paste a fresh full Cookie header",
         };
       }
-    } catch (parseError) {
+    } catch {
       return {
         valid: false,
         error: "Qwen returned invalid JSON response",
@@ -306,6 +332,68 @@ const GROK_IP_REPUTATION_GUIDANCE =
   "auth failure. cf_clearance is pinned to the IP + TLS fingerprint + User-Agent that earned " +
   "it and cannot be replayed from a different machine/IP. Retry from a residential IP or " +
   "configure a proxy for grok-web.";
+const GROK_VALIDATION_RAW_DETAIL_BUDGET = 64 * 1024;
+const GROK_REJECTED_DETAIL_DISPLAY_BUDGET = 160;
+const GROK_GENERIC_DETAIL_DISPLAY_BUDGET = 240;
+
+function decodeGrokValidationUnicodeEscapes(value: string): string {
+  let decoded = value;
+  for (let pass = 0; pass < 2; pass += 1) {
+    const next = decoded
+      .replace(/\\u([0-9a-f]{4})/gi, (_match, codeUnit: string) =>
+        String.fromCharCode(Number.parseInt(codeUnit, 16))
+      )
+      .replace(/\\\//g, "/");
+    if (next === decoded) break;
+    decoded = next;
+  }
+  return decoded;
+}
+
+function normalizeGrokValidationString(value: string): string {
+  return decodeGrokValidationUnicodeEscapes(value)
+    .replace(/\\r\\n|\\n|\\r/g, "\n")
+    .replace(/[\u2028\u2029]/g, "\n")
+    .replace(/\r\n?/g, "\n");
+}
+
+function normalizeGrokValidationJsonValue(value: unknown): unknown {
+  if (typeof value === "string") return normalizeGrokValidationString(value);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, nestedValue]) => [
+      normalizeGrokValidationString(key),
+      nestedValue,
+    ])
+  );
+}
+
+function sanitizeGrokValidationErrorDetail(errorDetail: string): string {
+  if (!errorDetail) return "";
+
+  try {
+    const parsed = JSON.parse(errorDetail, (_key, value: unknown) =>
+      normalizeGrokValidationJsonValue(value)
+    );
+    const sanitized = sanitizeUpstreamDetails(parsed);
+    return sanitized === null ? "" : (JSON.stringify(sanitized) ?? "");
+  } catch {
+    // Invalid or truncated upstream JSON still needs the bounded text sanitizer fallback.
+    return sanitizeErrorMessage(normalizeGrokValidationString(errorDetail));
+  }
+}
+
+function isGrokAntiBotBlockWithinBudget(errorDetail: string, wasTruncated: boolean): boolean {
+  if (!wasTruncated) return isGrokAntiBotBlock(errorDetail);
+
+  const text = errorDetail.trimStart();
+  if (/anti-bot|forbidden|access denied|blocked|rate.?limit/i.test(text)) return true;
+  // A JSON-shaped body may be incomplete only because our defensive parse budget
+  // cut it. Do not turn that bounded-read condition into a false IP-reputation verdict.
+  if (text.startsWith("{") || text.startsWith("[")) return false;
+  return isGrokAntiBotBlock(text);
+}
 
 export async function validateGrokWebProvider({ apiKey, providerSpecificData = {} }: any) {
   try {
@@ -389,19 +477,22 @@ export async function validateGrokWebProvider({ apiKey, providerSpecificData = {
         }),
         timeoutMs: 15_000,
       });
-    } catch (err: any) {
-      if (err instanceof TlsClientUnavailableError) {
+    } catch (err: unknown) {
+      if (isErrorInstance(err, TlsClientUnavailableError)) {
         return {
           valid: false,
-          error: `TLS impersonation client unavailable: ${err.message}`,
+          error: `TLS impersonation client unavailable: ${sanitizeValidationThrownError(err)}`,
         };
       }
       throw err;
     }
 
     let errorDetail = "";
+    let errorDetailWasTruncated = false;
     try {
-      errorDetail = (response.text || "").slice(0, 240);
+      const rawErrorDetail = response.text || "";
+      errorDetailWasTruncated = rawErrorDetail.length > GROK_VALIDATION_RAW_DETAIL_BUDGET;
+      errorDetail = rawErrorDetail.slice(0, GROK_VALIDATION_RAW_DETAIL_BUDGET);
     } catch {}
 
     // Detect Cloudflare challenge pages even with a 200 status from tls-client-node
@@ -457,7 +548,10 @@ export async function validateGrokWebProvider({ apiKey, providerSpecificData = {
       //    not code-fixable: the datacenter/VPS IP is flagged. A Cloudflare
       //    challenge body, Grok's "anti-bot rules" rejection, or a bare/non-JSON
       //    forbidden body (no structured upstream `error.message`) all map here.
-      if (isCloudflareChallenge(errorDetail) || isGrokAntiBotBlock(errorDetail)) {
+      if (
+        isCloudflareChallenge(errorDetail) ||
+        isGrokAntiBotBlockWithinBudget(errorDetail, errorDetailWasTruncated)
+      ) {
         return {
           valid: false,
           error: `Grok returned 403 (anti-bot/Cloudflare block). ${GROK_IP_REPUTATION_GUIDANCE}`,
@@ -465,9 +559,13 @@ export async function validateGrokWebProvider({ apiKey, providerSpecificData = {
       }
       // 3. Structured upstream error (e.g. probe model renamed) → surface the body
       //    so the user/maintainer sees the real cause instead of a wrong verdict.
+      const safeErrorDetail = sanitizeGrokValidationErrorDetail(errorDetail).slice(
+        0,
+        GROK_REJECTED_DETAIL_DISPLAY_BUDGET
+      );
       return {
         valid: false,
-        error: `Grok rejected validation (403)${errorDetail ? `: ${errorDetail.slice(0, 160)}` : ""}`,
+        error: `Grok rejected validation (403)${safeErrorDetail ? `: ${safeErrorDetail}` : ""}`,
       };
     }
 
@@ -479,9 +577,13 @@ export async function validateGrokWebProvider({ apiKey, providerSpecificData = {
       return { valid: false, error: `Grok unavailable (${response.status})` };
     }
 
+    const safeErrorDetail = sanitizeGrokValidationErrorDetail(errorDetail).slice(
+      0,
+      GROK_GENERIC_DETAIL_DISPLAY_BUDGET
+    );
     return {
       valid: false,
-      error: `Grok validation failed (${response.status})${errorDetail ? `: ${errorDetail}` : ""}`,
+      error: `Grok validation failed (${response.status})${safeErrorDetail ? `: ${safeErrorDetail}` : ""}`,
     };
   } catch (error: any) {
     return toValidationErrorResult(error);
@@ -529,11 +631,11 @@ export async function validateChatGptWebProvider({ apiKey, providerSpecificData 
         ),
         timeoutMs: 30_000,
       });
-    } catch (err: any) {
-      if (err instanceof TlsClientUnavailableError) {
+    } catch (err: unknown) {
+      if (isErrorInstance(err, TlsClientUnavailableError)) {
         return {
           valid: false,
-          error: `${err.message} (chatgpt-web requires this — without it, Cloudflare blocks every request)`,
+          error: `${sanitizeValidationThrownError(err)} (chatgpt-web requires this — without it, Cloudflare blocks every request)`,
         };
       }
       throw err;
@@ -568,9 +670,12 @@ export async function validateChatGptWebProvider({ apiKey, providerSpecificData 
     }
 
     if (!contentType.includes("json")) {
+      const safeContentType = sanitizeErrorMessage(contentType) || "no content-type";
+      const safeCfRay = cfRay ? sanitizeErrorMessage(cfRay) : "";
+      const safeResponseMetadata = `${safeContentType}${safeCfRay ? `, cf-ray=${safeCfRay}` : ""}`;
       return {
         valid: false,
-        error: `ChatGPT returned non-JSON (${contentType || "no content-type"}${cfRay ? `, cf-ray=${cfRay}` : ""}) — paste the FULL Cookie line including cf_clearance, __cf_bm, _cfuvid alongside the session-token chunks.`,
+        error: `ChatGPT returned non-JSON (${safeResponseMetadata}) — paste the FULL Cookie line including cf_clearance, __cf_bm, _cfuvid alongside the session-token chunks.`,
       };
     }
 
@@ -664,11 +769,11 @@ export async function validatePerplexityWebProvider({ apiKey, providerSpecificDa
         }),
         timeoutMs: 30_000,
       });
-    } catch (err) {
-      if (err instanceof TlsClientUnavailableError) {
+    } catch (err: unknown) {
+      if (isErrorInstance(err, TlsClientUnavailableError)) {
         return {
           valid: false,
-          error: `${err.message} perplexity-web requires it — without it Cloudflare blocks every request.`,
+          error: `${sanitizeValidationThrownError(err)} perplexity-web requires it — without it Cloudflare blocks every request.`,
         };
       }
       throw err;

@@ -28,8 +28,8 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWA
 ## fatihkabakk/tls-client-node 0.2.0
 
 OmniRoute includes [`tls-client-node@0.2.0`](https://github.com/fatihkabakk/tls-client-node/tree/v0.2.0)
-as an optional runtime dependency. The package is source-available under Apache License 2.0
-with the Commons Clause License Condition v1.0. The following license and NOTICE blocks are
+as an optional runtime dependency. The package is source-available, not OSI-approved, under
+Apache License 2.0 with the Commons Clause License Condition v1.0. The following license and NOTICE blocks are
 reproduced verbatim from the tagged primary sources.
 
 ### tls-client-node license
