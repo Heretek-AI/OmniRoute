@@ -1,3 +1,5 @@
+import { decodeJpegFrameDataUri } from "./videoBridgeFrameContract";
+
 export interface ContactSheetFrame {
   dataUri: string;
   timestampSeconds: number;
@@ -33,12 +35,6 @@ function fallback(frames: readonly ContactSheetFrame[]): VideoContactSheetResult
     timestamps: frames.map((frame) => frame.timestampSeconds),
     used: false,
   };
-}
-
-function decodeFrame(dataUri: string): Buffer {
-  const match = /^data:image\/jpeg;base64,([A-Za-z0-9+/=]{4,5592408})$/i.exec(dataUri);
-  if (!match) throw new Error("Contact sheet requires JPEG data URIs");
-  return Buffer.from(match[1], "base64");
 }
 
 function formatContactSheetTimestamp(timestampSeconds: number): string {
@@ -90,7 +86,7 @@ export async function buildVideoContactSheet(
     if (signal.aborted) throw new Error("Video contact sheet was aborted");
     const tiles = await Promise.all(
       frames.map(async (frame) =>
-        sharp(decodeFrame(frame.dataUri))
+        sharp(decodeJpegFrameDataUri(frame.dataUri))
           .resize(TILE_SIZE, TILE_SIZE, { fit: "contain", background: "#000000" })
           .composite([{ input: buildTimestampLabel(frame.timestampSeconds), left: 0, top: 0 }])
           .jpeg({ quality: 80 })
