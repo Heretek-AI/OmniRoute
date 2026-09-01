@@ -1,4 +1,5 @@
-import { decodeJpegFrameDataUri } from "./videoBridgeFrameContract";
+import { decodeJpegFrameDataUri, estimateJpegFrameBytes } from "./videoBridgeFrameContract";
+import { VIDEO_FRAME_MAX_BYTES } from "./videoBridgeRuntime";
 
 export interface ContactSheetFrame {
   dataUri: string;
@@ -85,13 +86,18 @@ export async function buildVideoContactSheet(
     const { default: sharp } = await import("sharp");
     if (signal.aborted) throw new Error("Video contact sheet was aborted");
     const tiles = await Promise.all(
-      frames.map(async (frame) =>
-        sharp(decodeJpegFrameDataUri(frame.dataUri))
+      frames.map(async (frame) => {
+        // Reject before decoding: an oversized frame must never reach sharp() just to be
+        // discovered later — estimateJpegFrameBytes reads the encoded length only.
+        if (estimateJpegFrameBytes(frame.dataUri) > VIDEO_FRAME_MAX_BYTES) {
+          throw new Error("Contact sheet frame exceeds the maximum per-frame size");
+        }
+        return sharp(decodeJpegFrameDataUri(frame.dataUri))
           .resize(TILE_SIZE, TILE_SIZE, { fit: "contain", background: "#000000" })
           .composite([{ input: buildTimestampLabel(frame.timestampSeconds), left: 0, top: 0 }])
           .jpeg({ quality: 80 })
-          .toBuffer()
-      )
+          .toBuffer();
+      })
     );
     if (signal.aborted) throw new Error("Video contact sheet was aborted");
     const output = await sharp({
