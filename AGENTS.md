@@ -131,10 +131,14 @@ breaker runs on `circuitBreakerThreshold` / `circuitBreakerReset`:
 | API key |         `7` |                                 `12` |                         `30s` |
 | Local   |   (derived) |                                  `2` |                         `15s` |
 
-`PROVIDER_PROFILES` also defines `providerFailureThreshold` (10/15/2) and `providerCooldownMs`
-(5min/10min/1min); those fields are loaded into the profile but have **no runtime consumer
-today** — do not tune or document them as the live breaker. Every default is overridable
-through the `OMNIROUTE_PROVIDER_BREAKER_*` and `OMNIROUTE_CIRCUIT_BREAKER_*` env vars; the
+`PROVIDER_PROFILES` also defines `providerFailureThreshold` (10/15/2),
+`providerFailureWindowMs` (15/30/5 min) and `providerCooldownMs` (5/10/1 min): these power the
+**window gate of the opt-in global Provider Cooldown** (`PROVIDER_COOLDOWN_ENABLED`, default
+off) — a provider-level entry in `open-sse/services/providerCooldownTracker.ts` only counts as
+cooling after `providerFailureThreshold` failures inside `providerFailureWindowMs`, and then
+cools for `providerCooldownMs`. They are NOT the live breaker's thresholds — do not tune them
+expecting breaker behavior. Every default is overridable through the
+`OMNIROUTE_PROVIDER_BREAKER_*` and `OMNIROUTE_CIRCUIT_BREAKER_*` env vars; the
 runtime-accurate reference table lives in `docs/architecture/RESILIENCE_GUIDE.md`.
 
 Only provider-level failure statuses should trip the provider breaker:
