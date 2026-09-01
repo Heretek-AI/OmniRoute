@@ -18,9 +18,9 @@ const ENGLISH_RULES = {
     "Radar stays network-inert until you opt in. Choose Community access or activate a personal supporter key after reviewing these rules.",
   accessCommunityRule: "Community — no key required: the complete catalog with a 30-day delay.",
   accessSingleUseRule:
-    "Star + follow — after GitHub OAuth verifies both, you receive one live catalog read, once per login; then access returns to Community and cannot be reissued.",
+    "Star + follow — after GitHub OAuth verifies both, your GitHub account receives one live catalog read; then access returns to Community. This one-time access cannot be reissued for that account.",
   accessContributorRule:
-    "Contributors — merged PRs, commits, and lines only order the weekly ranking. Top 10 receive 365 days; ranks 11–100 receive 90 days; outside the Top 100 receives no grant regardless of PR count. Leaving the ranking never shortens time already granted.",
+    "Contributors — merged PRs, commits, and lines only order the weekly ranking. Top 10 receive 365 days; ranks 11–100 receive 90 days; contributors outside the Top 100 receive no grant regardless of PR count. Leaving the ranking never shortens time already granted.",
   accessSupporterRule:
     "Supporters — one-time purchases grant 6 months, 1 year, or lifetime with no automatic renewal. Purchases, donations, contributor periods, and manual grants accumulate; lifetime always prevails.",
   accessUseTitle: "Personal use, recovery, and review",
@@ -44,7 +44,7 @@ const PORTUGUESE_RULES = {
     "O Radar permanece sem fazer chamadas de rede até você aceitar o opt-in. Depois de revisar estas regras, escolha o acesso Comunidade ou ative uma chave pessoal de apoiador.",
   accessCommunityRule: "Comunidade — sem chave: catálogo completo com 30 dias de atraso.",
   accessSingleUseRule:
-    "Estrela + seguir — depois que o GitHub OAuth confirmar as duas ações, você recebe uma única leitura do catálogo ao vivo, uma vez por login; depois o acesso volta para Comunidade e não pode ser reemitido.",
+    "Estrela + seguir — depois que o GitHub OAuth confirmar as duas ações, sua conta do GitHub recebe uma única leitura do catálogo ao vivo; depois o acesso volta para Comunidade. Esse acesso único não pode ser reemitido para essa conta.",
   accessContributorRule:
     "Contribuidores — PRs mergeadas, commits e linhas servem somente para ordenar o ranking semanal. Top 10 recebem 365 dias; posições 11–100 recebem 90 dias; fora do Top 100 não há concessão, independentemente da quantidade de PRs. Sair do ranking nunca encurta o período já concedido.",
   accessSupporterRule:

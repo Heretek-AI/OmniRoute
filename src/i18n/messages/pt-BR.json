@@ -13368,7 +13368,7 @@
     "accessScaleTitle": "Entenda o acesso ao Radar antes de ativar",
     "accessScaleIntro": "O Radar permanece sem fazer chamadas de rede até você aceitar o opt-in. Depois de revisar estas regras, escolha o acesso Comunidade ou ative uma chave pessoal de apoiador.",
     "accessCommunityRule": "Comunidade — sem chave: catálogo completo com 30 dias de atraso.",
-    "accessSingleUseRule": "Estrela + seguir — depois que o GitHub OAuth confirmar as duas ações, você recebe uma única leitura do catálogo ao vivo, uma vez por login; depois o acesso volta para Comunidade e não pode ser reemitido.",
+    "accessSingleUseRule": "Estrela + seguir — depois que o GitHub OAuth confirmar as duas ações, sua conta do GitHub recebe uma única leitura do catálogo ao vivo; depois o acesso volta para Comunidade. Esse acesso único não pode ser reemitido para essa conta.",
     "accessContributorRule": "Contribuidores — PRs mergeadas, commits e linhas servem somente para ordenar o ranking semanal. Top 10 recebem 365 dias; posições 11–100 recebem 90 dias; fora do Top 100 não há concessão, independentemente da quantidade de PRs. Sair do ranking nunca encurta o período já concedido.",
     "accessSupporterRule": "Apoiadores — compras únicas concedem 6 meses, 1 ano ou acesso vitalício, sem renovação automática. Compras, doações, períodos de contribuidor e concessões manuais se acumulam; o vitalício sempre prevalece.",
     "accessUseTitle": "Uso pessoal, recuperação e revisão",
