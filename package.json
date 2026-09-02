@@ -396,7 +396,7 @@
     "esbuild": "0.28.2",
     "eslint": "^10.9.0",
     "eslint-config-next": "16.3.3",
-    "eslint-plugin-react-hooks": "7.0.1",
+    "eslint-plugin-react-hooks": "7.1.1",
     "eslint-plugin-sonarjs": "^4.1.0",
     "espree": "^11.2.0",
     "fast-check": "^4.8.0",
@@ -455,7 +455,7 @@
   },
   "overrides": {
     "onnxruntime-node": "1.24.3",
-    "eslint-plugin-react-hooks": "7.0.1",
+    "eslint-plugin-react-hooks": "7.1.1",
     "fast-xml-parser": "^5.10.1",
     "sharp": "^0.35.4",
     "postcss": "^8.5.18",
