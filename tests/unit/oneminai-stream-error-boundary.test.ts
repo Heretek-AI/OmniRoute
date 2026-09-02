@@ -30,13 +30,17 @@ test(
 
     mkdirSync(testDataDir, { recursive: true });
     mkdirSync(testPluginsDir, { recursive: true });
-    const childEnv = {
-      ...process.env,
+    const childEnv: NodeJS.ProcessEnv = {
       APP_LOG_TO_FILE: "false",
       DATA_DIR: testDataDir,
       DISABLE_SQLITE_AUTO_BACKUP: "true",
+      NODE_ENV: "test",
       OMNIROUTE_PLUGINS_DIR: testPluginsDir,
     };
+    for (const name of ["PATH", "NODE_PATH", "LANG", "LC_ALL", "TZ", "TMPDIR"] as const) {
+      const value = process.env[name];
+      if (value !== undefined) childEnv[name] = value;
+    }
     // A nested `node --test` must create its own runner context instead of
     // inheriting the parent's private reporter channel.
     delete childEnv.NODE_TEST_CONTEXT;
