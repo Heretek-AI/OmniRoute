@@ -15,6 +15,21 @@ import {
   parseJsonValuesOutput,
 } from "../../scripts/build/pack-artifact-policy.ts";
 
+test("artifact path policy arrays contain no duplicate entries", () => {
+  const policies = {
+    APP_STAGING_ALLOWED_EXACT_PATHS,
+    APP_STAGING_ALLOWED_PATH_PREFIXES,
+    PACK_ARTIFACT_ALLOWED_EXACT_PATHS,
+    PACK_ARTIFACT_ALLOWED_PATH_PREFIXES,
+    PACK_ARTIFACT_REQUIRED_PATHS,
+  };
+
+  for (const [name, paths] of Object.entries(policies)) {
+    const duplicates = [...new Set(paths.filter((entry, index) => paths.indexOf(entry) !== index))];
+    assert.deepEqual(duplicates, [], `${name} contains duplicate paths: ${duplicates.join(", ")}`);
+  }
+});
+
 test("normalizeArtifactPath normalizes slashes and leading relative markers", () => {
   assert.equal(
     normalizeArtifactPath("./app\\scripts\\ad-hoc\\test.js"),
@@ -253,6 +268,9 @@ test("findMissingArtifactPaths flags missing root runtime files in the tarball",
     "bin/mcp-server.mjs",
     "bin/mcpStdioConsoleGuard.mjs",
     "bin/nodeRuntimeSupport.mjs",
+    "config/release/wreq-js-native-manifest.json",
+    "config/release/wreq-js-rust-license-inventory.json",
+    "config/release/wreq-js-rust-notices.md",
     "dist/head-response-guard.cjs",
     "dist/http-method-guard.cjs",
     "dist/main-server-timeouts.mjs",
@@ -267,9 +285,9 @@ test("findMissingArtifactPaths flags missing root runtime files in the tarball",
     "dist/tls-options.mjs",
     "dist/webdav-handler.mjs",
     "scripts/build/colocateOptionals.mjs",
-    "scripts/build/fixTlsClientNodeBinary.mjs",
     "scripts/build/native-binary-compat.mjs",
     "scripts/build/runtime-env.mjs",
+    "scripts/build/wreqJsNative.mjs",
     "scripts/packs/optionalPackInstaller.mjs",
     "scripts/packs/optionalPackManifest.mjs",
     "src/shared/utils/nodeRuntimeSupport.ts",

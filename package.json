@@ -1,7 +1,7 @@
 {
   "name": "omniroute",
   "version": "3.8.51",
-  "description": "Unified AI router with 354 providers, RTK+Caveman compression, auto fallback, MCP/A2A, desktop, PWA, and OpenAI-compatible APIs.",
+  "description": "Unified AI router with 355 providers, RTK+Caveman compression, auto fallback, MCP/A2A, desktop, PWA, and OpenAI-compatible APIs.",
   "type": "module",
   "bin": {
     "omniroute": "bin/omniroute.mjs",
@@ -22,7 +22,6 @@
     "src/types/",
     ".env.example",
     "scripts/build/postinstall.mjs",
-    "scripts/build/fixTlsClientNodeBinary.mjs",
     "scripts/build/fixPlaywrightAndroid.mjs",
     "bin/cli/runtime/",
     "scripts/postinstall.mjs",
@@ -38,6 +37,10 @@
     "scripts/build/backendOnlyPages.mjs",
     "scripts/build/build-tproxy-native.mjs",
     "scripts/build/native-binary-compat.mjs",
+    "scripts/build/wreqJsNative.mjs",
+    "config/release/wreq-js-native-manifest.json",
+    "config/release/wreq-js-rust-license-inventory.json",
+    "config/release/wreq-js-rust-notices.md",
     "scripts/build/build-next-isolated.mjs",
     "scripts/build/runtime-env.mjs",
     "scripts/packs/optionalPackManifest.mjs",
@@ -362,8 +365,7 @@
     "keytar": "^7.9.0",
     "onnxruntime-node": "1.24.3",
     "sqlite-vec": "^0.1.9",
-    "tls-client-node": "^0.2.0",
-    "wreq-js": "^3.2.0"
+    "wreq-js": "3.2.0"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",

@@ -45,6 +45,7 @@ const lazyExecutors: Record<string, () => Promise<BaseExecutor>> = {
   "chatgpt-web-codex": () =>
     import("./chatgpt-web-codex.ts").then((m) => new m.ChatGptWebCodexExecutor()),
   "cgpt-codex": () => import("./chatgpt-web-codex.ts").then((m) => new m.ChatGptWebCodexExecutor()),
+  "chatgpt-web": () => import("./chatgpt-web.ts").then((m) => new m.ChatGptWebExecutor()),
   cursor: () => import("./cursor.ts").then((m) => new m.CursorExecutor()),
   trae: () => import("./trae.ts").then((m) => new m.TraeExecutor()),
   glm: () => import("./glm.ts").then((m) => new m.GlmExecutor("glm")),
