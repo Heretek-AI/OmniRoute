@@ -477,6 +477,46 @@ export const WEB_COOKIE_PROVIDERS = {
     authHint:
       "Use browser sign-in, or paste the full Cookie header from conol.ai. The __Secure-better-auth.session_token cookie is required.",
   },
+  maxai: {
+    id: "maxai",
+    serviceKinds: ["llm"],
+    alias: "mx",
+    name: "MaxAI",
+    icon: "auto_awesome",
+    color: "#6D28D9",
+    textIcon: "MX",
+    website: "https://www.maxai.co",
+    // No subscriptionRisk / riskNoticeVariant / notice: MaxAI is TOKEN-authenticated
+    // (a bearer access token + a long-lived refresh token that OmniRoute refreshes
+    // browserlessly), NOT a fragile browser-cookie session, so the "webCookie"
+    // caveat ("may invalidate at any time, log in again, not for unattended use")
+    // and the "oauth" caveat ("official session not authorized for proxy use") are
+    // both inaccurate — MaxAI is a purpose-built aggregator whose token IS meant for
+    // API use. Treated like codex-app-server: no risk banner and no notice; the
+    // authHint carries the only guidance a connecting operator needs.
+    toolCalling: "emulated",
+    authHint:
+      "Sign in once (email code or browser) to mint a MaxAI access token. OmniRoute signs each request, routes it through residential egress, and refreshes the token browserlessly, so a connection stays valid for about a year without re-login.",
+  },
+  uc: {
+    id: "uc",
+    serviceKinds: ["llm"],
+    alias: "ucn",
+    name: "UC (uncensored.com)",
+    icon: "auto_awesome",
+    color: "#111827",
+    textIcon: "UC",
+    website: "https://uncensored.com",
+    // No subscriptionRisk / riskNoticeVariant / notice: UC is TOKEN-authenticated
+    // — a durable Clerk credential from which OmniRoute mints a fresh short-lived
+    // session token per request, browserlessly. It is not a fragile browser-cookie
+    // session, so the "webCookie" caveat is inaccurate. The un-metered subscription
+    // session renews automatically within its window; only the periodic re-login
+    // (email code) needs an operator, and the authHint covers that.
+    toolCalling: "emulated",
+    authHint:
+      "Sign in once with an email code to bootstrap a UC (uncensored.com) subscription session. OmniRoute mints a fresh short-lived token per request browserlessly, so the connection renews on its own; you only re-run the email login about once a month when the subscription session rolls over.",
+  },
 };
 
 /** Resolved public site for a web-session provider (href + display host). */

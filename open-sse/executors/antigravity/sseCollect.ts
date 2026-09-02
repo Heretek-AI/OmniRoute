@@ -1,6 +1,7 @@
 // Pure SSE-payload -> collected-stream parsing for the Antigravity executor.
 // Extracted verbatim from antigravity.ts (no host state, no fetch/auth).
 import { normalizeOpenAICompatibleFinishReasonString } from "../../utils/finishReason.ts";
+import { stripObfuscationZeroWidth } from "../../utils/zeroWidth.ts";
 
 export type AntigravityCollectedStream = {
   textContent: string;
@@ -17,7 +18,7 @@ export type AntigravityCollectedStream = {
 
 export function stripZeroWidth(value: unknown): unknown {
   if (typeof value === "string") {
-    return value.replace(/[\u200B-\u200D\uFEFF]/g, "");
+    return stripObfuscationZeroWidth(value);
   }
   if (Array.isArray(value)) {
     return value.map((item) => stripZeroWidth(item));
@@ -37,7 +38,7 @@ export function parseAntigravityTextualToolCall(
   text: unknown
 ): { name: string; args: unknown } | null {
   if (typeof text !== "string") return null;
-  const normalized = text.replace(/[\u200B-\u200D\uFEFF]/g, "");
+  const normalized = stripObfuscationZeroWidth(text);
   const match = normalized.match(
     /^[\s\S]*?\[Tool call:\s*([^\]\n]+)\]\s*\nArguments:\s*([\s\S]+?)\s*$/
   );

@@ -70,7 +70,6 @@ const PROVIDER_IDS_WITHOUT_LOCAL_ASSET_PROVENANCE = [
   "serper-search",
   "soniox",
   "synthetic",
-  "theoldllm",
   "unorouter",
   "wandb",
   "youcom-search",
@@ -247,8 +246,8 @@ describe("ProviderIcon — local SVG dimensions", () => {
 
 describe("ProviderIcon — unresolved local asset provenance", () => {
   it("covers the complete provider and alias inventory", () => {
-    expect(PROVIDER_IDS_WITHOUT_LOCAL_ASSET_PROVENANCE).toHaveLength(80);
-    expect(new Set(PROVIDER_IDS_WITHOUT_LOCAL_ASSET_PROVENANCE)).toHaveLength(80);
+    expect(PROVIDER_IDS_WITHOUT_LOCAL_ASSET_PROVENANCE).toHaveLength(79);
+    expect(new Set(PROVIDER_IDS_WITHOUT_LOCAL_ASSET_PROVENANCE)).toHaveLength(79);
   });
 
   it.each(PROVIDER_IDS_WITHOUT_LOCAL_ASSET_PROVENANCE)(

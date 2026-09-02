@@ -256,7 +256,6 @@ const GENERIC_PROVIDER_IDS = new Set([
   "serper-search",
   "soniox",
   "synthetic",
-  "theoldllm",
   "unorouter",
   "wandb",
   "youcom-search",

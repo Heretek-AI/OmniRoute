@@ -52,7 +52,7 @@ Common problems and solutions for OmniRoute.
 
 ```bash
 export OMNIROUTE_ROTATE_ON_400=true           # hop to another model/provider on 400/401 (skips broken passthrough models)
-export OMNIROUTE_CHAT_MAX_HEAVY_IN_FLIGHT=4   # raise the heavyweight admission ceiling (default 1) so long-context bursts are not rejected
+export OMNIROUTE_CHAT_MAX_HEAVY_IN_FLIGHT=4   # explicit heavyweight admission ceiling (unset by default: no request-count cap, see note below)
 export OMNIROUTE_CHAT_ADMISSION_QUEUE_MS=5000 # longer bounded wait for heavyweight capacity instead of an immediate retryable 503
 ```
 
@@ -538,8 +538,12 @@ When many concurrent requests hit a rate-limited provider, OmniRoute uses mutex 
 
 - The chat completions endpoint returns a retryable `503` response whose error code is
   `chat_admission_busy`.
-- The response includes `Retry-After`; the byte-based path uses 2 seconds, while the
-  structure-based path uses 1 second and includes `reason: "structure_limit"`.
+- The response includes `Retry-After`. Since #12135 the value is derived from observed
+  occupancy — the larger of the `OMNIROUTE_CHAT_ADMISSION_QUEUE_MS` window the request already
+  waited and the time the current heavyweight leases have been held — rounded up to whole
+  seconds and capped at 60. On an idle gate it keeps the historical floors: 2 seconds on the
+  byte-based path, 1 second on the structure-based path (which also includes
+  `reason: "structure_limit"`).
 - This can happen while another heavyweight chat or long-running streaming response is still
   in flight.
 
@@ -556,8 +560,8 @@ The byte-based response body is:
 ```
 
 The structure-based response uses the same type and code, with the message
-`Structurally heavy chat request capacity is busy; retry shortly.` and
-`reason: "structure_limit"`.
+`Local chat admission capacity is busy for this structurally heavy request; upstream provider routing was not attempted. Retry shortly.`
+and `reason: "structure_limit"`.
 At the default thresholds, a request is structurally heavy when it has at least `200` messages,
 at least `64` tools, or at least `32,000` estimated tokens, or when bounded structure estimation
 exhausts its bounds of `10,000` visited nodes or depth `12`.

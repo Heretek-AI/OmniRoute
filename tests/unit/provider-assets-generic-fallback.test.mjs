@@ -51,7 +51,6 @@ const LOCAL_SVG_IDS_WITHOUT_PROVENANCE = [
   "serper-search",
   "soniox",
   "synthetic",
-  "theoldllm",
   "unorouter",
   "wandb",
   "youcom-search",
@@ -179,9 +178,9 @@ const AUDITED_REFERENCE_FILES = [
   ...referenceRoots.flatMap((directory) => collectTextFiles(join(root, directory))),
 ];
 
-test("provider bundle retires exactly the 80 unresolved assets and keeps the generic icon", () => {
-  assert.equal(retiredAssetNames.length, 80);
-  assert.equal(new Set(retiredAssetNames).size, 80);
+test("provider bundle retires exactly the 79 unresolved assets and keeps the generic icon", () => {
+  assert.equal(retiredAssetNames.length, 79);
+  assert.equal(new Set(retiredAssetNames).size, 79);
 
   for (const assetName of retiredAssetNames) {
     assert.equal(
