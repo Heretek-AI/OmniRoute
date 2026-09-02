@@ -258,8 +258,6 @@ test("public identifier vocabulary preserves current internal machine-readable c
     "TLS_CLIENT_UNAVAILABLE",
     "upstream_access_denied",
     "proxy_unavailable",
-    "THEOLDLLM_VERCEL_MITIGATED",
-    "THEOLDLLM_PROXY_UNAVAILABLE",
     "EXECUTOR_ERROR",
     "executor_contract_violation",
     "orphan_tool_result",

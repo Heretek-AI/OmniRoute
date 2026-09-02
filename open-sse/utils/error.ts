@@ -271,8 +271,6 @@ const SAFE_PUBLIC_ERROR_IDENTIFIERS = new Set([
   "usage_limit_reached",
   "unsupported_feature",
   "unsupported_runtime",
-  "theoldllm_proxy_unavailable",
-  "theoldllm_vercel_mitigated",
   "video_artifact_content_type_invalid",
   "video_artifact_download_failed",
   "video_artifact_not_ready",

@@ -47,6 +47,7 @@ import {
 } from "./responsesCommentaryDrop.ts";
 import { buildErrorBody } from "./error.ts";
 import { parseTextualToolCallCandidate, isValidToolCallHeaderPrefix } from "./textualToolCall.ts";
+import { stripObfuscationZeroWidth } from "./zeroWidth.ts";
 import {
   formatTranslatedStreamError,
   normalizeStreamFailurePayload,
@@ -273,7 +274,7 @@ function containsMalformedTextualToolCall(
   allowedToolNames?: Set<string> | null
 ): boolean {
   if (typeof text !== "string") return false;
-  const normalized = text.replace(/[\u200B-\u200D\uFEFF]/g, "");
+  const normalized = stripObfuscationZeroWidth(text);
 
   let searchIdx = 0;
   while (true) {

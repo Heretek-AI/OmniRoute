@@ -2096,8 +2096,15 @@ export async function getProviderCredentials(
         parseInt(randomUUID().replace(/-/g, "").substring(0, 8), 16) % orderedConnections.length;
       connection = orderedConnections[idx];
     } else if (strategy === "least-used") {
-      // Least Used: pick the one with oldest lastUsedAt
+      // Least Used: pick the one with oldest lastUsedAt.
+      // #12279: prefer accounts without backoff first, the same tie-break the
+      // round-robin fallback branch applies. Without it the oldest lastUsedAt
+      // could belong to an account that just 429'd, so a failover landed on it
+      // for one request before the next call settled on a healthy account.
       const sorted = [...orderedConnections].sort((a, b) => {
+        const aBackoff = a.backoffLevel || 0;
+        const bBackoff = b.backoffLevel || 0;
+        if (aBackoff !== bBackoff) return aBackoff - bBackoff; // lower backoff first
         if (!a.lastUsedAt && !b.lastUsedAt) return (a.priority || 999) - (b.priority || 999);
         if (!a.lastUsedAt) return -1;
         if (!b.lastUsedAt) return 1;
