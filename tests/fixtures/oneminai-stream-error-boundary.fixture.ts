@@ -33,6 +33,24 @@ const originalFetch = globalThis.fetch;
 const encoder = new TextEncoder();
 const STREAM_URL = "https://api.1min.ai/api/chat-with-ai?isStreaming=true";
 
+type PersistenceIdentity = {
+  model: string;
+  connectionId: string;
+};
+
+const PRE_CONTENT_IDENTITY: PersistenceIdentity = {
+  model: "gpt-4o-mini-onemin-pre-content-boundary",
+  connectionId: "onemin-stream-pre-content-boundary",
+};
+const BATCHED_IDENTITY: PersistenceIdentity = {
+  model: "gpt-4o-mini-onemin-batched-boundary",
+  connectionId: "onemin-stream-batched-boundary",
+};
+const PARTIAL_IDENTITY: PersistenceIdentity = {
+  model: "gpt-4o-mini-onemin-partial-boundary",
+  connectionId: "onemin-stream-partial-boundary",
+};
+
 function installFetchFactory(responseFactory: () => Response): () => number {
   let calls = 0;
   globalThis.fetch = async (input, init = {}) => {
@@ -81,6 +99,7 @@ function noopLog() {
 }
 
 async function invokeStreamingChatCore(
+  identity: PersistenceIdentity,
   onStreamFailure?: (failure: {
     status: number;
     message: string;
@@ -92,27 +111,30 @@ async function invokeStreamingChatCore(
   await settingsDb.updateSettings({ call_log_pipeline_enabled: true });
   readCache.invalidateDbCache("settings");
   const body = {
-    model: "gpt-4o-mini",
+    model: identity.model,
     stream: true,
     messages: [{ role: "user", content: "hello" }],
   };
 
   return handleChatCore({
     body: structuredClone(body),
-    modelInfo: { provider: "oneminai", model: "gpt-4o-mini", extendedContext: false },
+    modelInfo: { provider: "oneminai", model: identity.model, extendedContext: false },
     credentials: {
       apiKey: "unit-test-key",
-      connectionId: "onemin-stream-boundary-test",
+      connectionId: identity.connectionId,
       providerSpecificData: {},
     },
-    connectionId: "onemin-stream-boundary-test",
+    connectionId: identity.connectionId,
     log: noopLog(),
     clientRawRequest: {
       endpoint: "/v1/chat/completions",
       body: structuredClone(body),
-      headers: new Headers({ accept: "text/event-stream" }),
+      headers: new Headers({
+        accept: "text/event-stream",
+        "x-omniroute-session-id": identity.connectionId,
+      }),
     },
-    userAgent: "onemin-stream-boundary-test",
+    userAgent: identity.connectionId,
     onRequestSuccess,
     onStreamFailure,
   } as never);
@@ -128,23 +150,46 @@ async function waitFor<T>(read: () => Promise<T | null>, timeoutMs = 5_000): Pro
   return null;
 }
 
-async function getLatestOneMinCallLog() {
+async function getOneMinCallLog(identity: PersistenceIdentity) {
   assert.equal(
     await callLogs.waitForCallLogSaves(5_000),
     true,
     "call-log persistence must drain before inspection"
   );
-  const rows = await callLogs.getCallLogs({ provider: "oneminai", limit: 5 });
-  const row = Array.isArray(rows) ? rows[0] : null;
+  const rows = await callLogs.getCallLogs({
+    provider: "oneminai",
+    model: identity.model,
+    limit: 20,
+  });
+  const row = Array.isArray(rows)
+    ? rows.find(
+        (candidate) =>
+          candidate.connectionId === identity.connectionId &&
+          (candidate.model === identity.model || candidate.requestedModel === identity.model)
+      )
+    : null;
   return row ? callLogs.getCallLogById(row.id) : null;
 }
 
-async function getLatestOneMinUsage() {
+async function getOneMinUsage(identity: PersistenceIdentity) {
   const rows = await usageHistory.getUsageHistory({
     provider: "oneminai",
-    model: "gpt-4o-mini",
+    model: identity.model,
   });
-  return rows.at(-1) ?? null;
+  return rows.find((row) => row.connectionId === identity.connectionId) ?? null;
+}
+
+async function assertUnusedPersistenceIdentity(identity: PersistenceIdentity) {
+  assert.equal(
+    await getOneMinCallLog(identity),
+    null,
+    `call-log identity must be unused before scenario: ${identity.connectionId}`
+  );
+  assert.equal(
+    await getOneMinUsage(identity),
+    null,
+    `usage identity must be unused before scenario: ${identity.connectionId}`
+  );
 }
 
 async function readUntil(
@@ -225,6 +270,7 @@ test("1min.ai pre-content stream errors stay errors and permit readiness fallbac
 });
 
 test("chatCore turns a pre-content 1min.ai stream error into persisted HTTP 502", async () => {
+  await assertUnusedPersistenceIdentity(PRE_CONTENT_IDENTITY);
   installStreamingFetch([
     `event: error\ndata: ${JSON.stringify({
       error: {
@@ -234,7 +280,7 @@ test("chatCore turns a pre-content 1min.ai stream error into persisted HTTP 502"
     })}\n\n`,
   ]);
 
-  const result = await invokeStreamingChatCore();
+  const result = await invokeStreamingChatCore(PRE_CONTENT_IDENTITY);
   assert.equal(result.success, false);
   if (result.success) assert.fail("a pre-content error must not commit HTTP 200");
   assert.equal(result.status, 502);
@@ -245,7 +291,7 @@ test("chatCore turns a pre-content 1min.ai stream error into persisted HTTP 502"
   assert.doesNotMatch(clientBody, /\/srv\/omniroute/);
   assert.doesNotMatch(clientBody, /stack tail/);
 
-  const detail = await waitFor(getLatestOneMinCallLog);
+  const detail = await waitFor(() => getOneMinCallLog(PRE_CONTENT_IDENTITY));
   assert.ok(detail, "the failed pre-content attempt must be persisted");
   assert.equal(detail.status, 502);
   const persisted = JSON.stringify(detail);
@@ -253,7 +299,7 @@ test("chatCore turns a pre-content 1min.ai stream error into persisted HTTP 502"
   assert.doesNotMatch(persisted, /\/srv\/omniroute/);
   assert.doesNotMatch(persisted, /stack tail/);
 
-  const usage = await waitFor(getLatestOneMinUsage);
+  const usage = await waitFor(() => getOneMinUsage(PRE_CONTENT_IDENTITY));
   assert.ok(usage, "the failed pre-content usage record must be persisted");
   assert.equal(usage.success, false);
   assert.equal(usage.status, "502");
@@ -261,6 +307,7 @@ test("chatCore turns a pre-content 1min.ai stream error into persisted HTTP 502"
 });
 
 test("chatCore preserves batched 1min.ai content before its terminal stream error", async () => {
+  await assertUnusedPersistenceIdentity(BATCHED_IDENTITY);
   installStreamingFetch([
     'event: content\ndata: {"content":"batched partial one"}\n\n' +
       'event: content\ndata: {"content":"batched partial two"}\n\n' +
@@ -278,6 +325,7 @@ test("chatCore preserves batched 1min.ai content before its terminal stream erro
   const requestSuccessPhases: string[] = [];
 
   const result = await invokeStreamingChatCore(
+    BATCHED_IDENTITY,
     (failure) => failures.push(failure),
     async () => {
       requestSuccessPhases.push("started");
@@ -326,7 +374,7 @@ test("chatCore preserves batched 1min.ai content before its terminal stream erro
   assert.equal(completed[0].error, "1min.ai upstream stream failed");
   assert.equal(completed[0].errorCode, "stream_pipeline_error");
 
-  const detail = await waitFor(getLatestOneMinCallLog);
+  const detail = await waitFor(() => getOneMinCallLog(BATCHED_IDENTITY));
   assert.ok(detail, "the batched terminal stream failure must be persisted");
   assert.equal(detail.status, 502);
   assert.equal(detail.error, "1min.ai upstream stream failed");
@@ -334,7 +382,7 @@ test("chatCore preserves batched 1min.ai content before its terminal stream erro
   assert.doesNotMatch(persisted, /batched-secret/);
   assert.doesNotMatch(persisted, /\/srv\/omniroute/);
 
-  const usage = await waitFor(getLatestOneMinUsage);
+  const usage = await waitFor(() => getOneMinUsage(BATCHED_IDENTITY));
   assert.ok(usage, "the batched terminal failure usage record must be persisted");
   assert.equal(usage.success, false);
   assert.equal(usage.status, "502");
@@ -342,6 +390,7 @@ test("chatCore preserves batched 1min.ai content before its terminal stream erro
 });
 
 test("chatCore preserves partial 1min.ai content then finalizes and persists a stream failure", async () => {
+  await assertUnusedPersistenceIdentity(PARTIAL_IDENTITY);
   let upstreamController: ReadableStreamDefaultController<Uint8Array> | null = null;
   let cancelCalls = 0;
   const getCalls = installFetchFactory(
@@ -368,7 +417,9 @@ test("chatCore preserves partial 1min.ai content then finalizes and persists a s
     type?: string;
   }> = [];
 
-  const result = await invokeStreamingChatCore((failure) => failures.push(failure));
+  const result = await invokeStreamingChatCore(PARTIAL_IDENTITY, (failure) =>
+    failures.push(failure)
+  );
   assert.equal(getCalls(), 1);
   assert.equal(result.success, true, "real content must cross the readiness boundary");
   assert.ok(result.response.body);
@@ -421,7 +472,7 @@ test("chatCore preserves partial 1min.ai content then finalizes and persists a s
   assert.equal(completed[0].error, "1min.ai upstream stream failed");
   assert.equal(completed[0].errorCode, "stream_pipeline_error");
 
-  const detail = await waitFor(getLatestOneMinCallLog);
+  const detail = await waitFor(() => getOneMinCallLog(PARTIAL_IDENTITY));
   assert.ok(detail, "the post-content stream failure must be persisted");
   assert.equal(detail.status, 502);
   assert.equal(detail.error, "1min.ai upstream stream failed");
@@ -431,7 +482,7 @@ test("chatCore preserves partial 1min.ai content then finalizes and persists a s
   assert.doesNotMatch(persisted, /\/srv\/omniroute/);
   assert.doesNotMatch(persisted, /stack tail/);
 
-  const usage = await waitFor(getLatestOneMinUsage);
+  const usage = await waitFor(() => getOneMinUsage(PARTIAL_IDENTITY));
   assert.ok(usage, "the post-content failure usage record must be persisted");
   assert.equal(usage.success, false);
   assert.equal(usage.status, "502");
