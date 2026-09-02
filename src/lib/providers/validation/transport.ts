@@ -128,6 +128,18 @@ export const WEB_COOKIE_PROVIDERS_WITHOUT_MODELS_API = new Set([
   "copilot-m365-web",
 ]);
 
+// #12107 — web-cookie providers whose registry entry exists to publish a model catalog
+// (so `/v1/models` and `/v1/providers/{id}/models` list something) but whose `baseUrl`
+// is a browser console, not an API host. gemini-business's entry points at
+// business.gemini.google/home: the executor only uses that origin to derive a
+// per-tenant StreamGenerate path (`/home/cid/{CID}/_/BardChatUi/...`), so there is no
+// side-effect-free auth probe on the host — `${baseUrl}/models` is a page Google never
+// served, and a 401/403 from a console page is not a credential signal either. Unlike
+// WEB_COOKIE_PROVIDERS_WITHOUT_MODELS_API these providers are therefore not probed at
+// all: validation stays the honest "unsupported" it reported before the registry entry
+// existed, decided BEFORE any network call.
+export const WEB_COOKIE_PROVIDERS_WITHOUT_AUTH_PROBE = new Set(["gemini-business"]);
+
 export function toWebCookieValidationErrorResult(provider: string, error: unknown) {
   if (
     error instanceof SafeOutboundFetchError &&
