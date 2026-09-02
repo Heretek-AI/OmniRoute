@@ -255,7 +255,6 @@ const GENERIC_PROVIDER_IDS = new Set([
   "serper-search",
   "soniox",
   "synthetic",
-  "theoldllm",
   "unorouter",
   "wandb",
   "youcom-search",
@@ -347,7 +346,9 @@ const ProviderIcon = memo(function ProviderIcon({
     : normalizedId;
   const usesGenericIcon =
     GENERIC_PROVIDER_IDS.has(normalizedId) || GENERIC_PROVIDER_IDS.has(localSvgId);
-  const themedSvg = Object.hasOwn(THEMED_SVGS, normalizedId) ? THEMED_SVGS[normalizedId] : undefined;
+  const themedSvg = Object.hasOwn(THEMED_SVGS, normalizedId)
+    ? THEMED_SVGS[normalizedId]
+    : undefined;
   const hasSvg = KNOWN_SVGS.has(localSvgId);
 
   const [failedAssets, setFailedAssets] = useState<Record<string, true>>({});
