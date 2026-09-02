@@ -38,6 +38,9 @@ export function projectResponsesFailureOutput(
           content.push({
             type: "output_text",
             text: projectString("text", contentPart.text),
+            // Preserve the required Responses schema without forwarding any
+            // untrusted citation/file metadata supplied by the provider.
+            annotations: [],
           });
         } else if (contentPart.type === "refusal" && typeof contentPart.refusal === "string") {
           content.push({

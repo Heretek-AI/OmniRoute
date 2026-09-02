@@ -285,7 +285,7 @@ test("Responses response.failed is projected before forwarding, logging, and onF
   assert.match(result.output, /"last_error":\{/);
   assert.match(result.output, /safe partial output/);
   assert.match(result.output, /safe refusal/);
-  assert.doesNotMatch(result.output, /"annotations"/);
+  assert.match(result.output, /"annotations":\[\]/);
   assert.doesNotMatch(result.output, /hidden nested commentary must not be public/);
   assert.doesNotMatch(result.output, /roleless output must not be public/);
   assert.match(result.output, /"cached_tokens":1/);

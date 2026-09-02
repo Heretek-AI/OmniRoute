@@ -335,7 +335,7 @@ test("sanitizes response.failed messages without rewriting unrelated deep diagno
     {
       type: "message",
       role: "assistant",
-      content: [{ type: "output_text", text: "safe direct partial output" }],
+      content: [{ type: "output_text", text: "safe direct partial output", annotations: [] }],
     },
   ]);
   assert.doesNotMatch(serialized, /private direct reasoning/);
@@ -409,7 +409,7 @@ test("sanitizes response.completed failed siblings in objects, SSE, and NDJSON",
       role: "assistant",
       status: "in_progress",
       content: [
-        { type: "output_text", text: "partial safe output" },
+        { type: "output_text", text: "partial safe output", annotations: [] },
         { type: "refusal", refusal: "safe refusal" },
       ],
     },
@@ -440,7 +440,8 @@ test("sanitizes response.completed failed siblings in objects, SSE, and NDJSON",
     serialized,
     /completed-failed-secret|srv\/private|completed-failed\.ts|private commentary|private roleless|private chain|private encrypted|private tool/i
   );
-  assert.doesNotMatch(serialized, /"annotations"|"diagnostics"|"function_call"|"reasoning"/);
+  assert.match(serialized, /"annotations":\[\]/);
+  assert.doesNotMatch(serialized, /"url_citation"|"diagnostics"|"function_call"|"reasoning"/);
   assert.match(serialized, /partial safe output/);
   assert.match(serialized, /safe refusal/);
   assert.deepEqual(
