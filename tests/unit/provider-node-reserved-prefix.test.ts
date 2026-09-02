@@ -175,7 +175,9 @@ test("shared set size includes live REGISTRY and retired Designer + Felo + Qwen 
   // alias "ucn", and the Developer API id "uc-direct" + alias "ucd" (402 → 406).
   // #12389: the gemini-business registry entry adds its id "gemini-business" and
   // alias "gembiz" to the REGISTRY walk (406 → 408).
-  assert.equal(RESERVED_PREFIX_COUNT, 408);
+  // 2026-09-02: a keyless provider was removed at its operator's request, taking its id and
+  // alias out of the REGISTRY walk (408 → 406).
+  assert.equal(RESERVED_PREFIX_COUNT, 406);
 });
 
 test("isReservedProviderPrefix rejects non-string input", () => {
