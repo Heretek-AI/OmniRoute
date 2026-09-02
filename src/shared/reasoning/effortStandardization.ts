@@ -83,7 +83,7 @@ export function extendDeepSeekEffortValues(
  * DeepSeek provider (registry id `deepseek`, alias `ds`).
  *
  * Deliberately scoped to the native provider: routed namespaces such as
- * `openrouter/deepseek/...` or `tllm/deepseek_v4` terminate at a different
+ * `openrouter/deepseek/...` or `oc/deepseek-v4-flash-free` terminate at a different
  * upstream whose accepted effort vocabulary we do not control.
  */
 export function isDeepSeekNativeMaxModel(

@@ -22,7 +22,14 @@ import path from "node:path";
  */
 export function isTransientProbeError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  if (/SQLITE_BUSY|SQLITE_PROTOCOL|SQLITE_IOERR|ENOENT|database is locked/i.test(message)) {
+  // #12423 widened the message side: SQLite also reports "database table is
+  // locked", "database schema is locked" and "database is busy" for the same
+  // transient contention that "database is locked" covers.
+  if (
+    /SQLITE_BUSY|SQLITE_PROTOCOL|SQLITE_IOERR|ENOENT|database(?: table| schema)? is (?:locked|busy)/i.test(
+      message
+    )
+  ) {
     return true;
   }
   // The real drivers do not put the result-code name in the message: both

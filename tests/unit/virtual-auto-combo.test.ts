@@ -277,7 +277,7 @@ test("createVirtualAutoCombo restricts the no-auth pool to the allowlist", async
     );
   }
 
-  for (const excluded of ["duckduckgo-web", "theoldllm", "chipotle", "aihorde"]) {
+  for (const excluded of ["duckduckgo-web", "chipotle", "aihorde"]) {
     assert.equal(
       combo.models.some((model) => model.providerId === excluded),
       false,

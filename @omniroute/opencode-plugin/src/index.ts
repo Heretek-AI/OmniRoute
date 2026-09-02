@@ -3477,7 +3477,7 @@ export function createOmniRouteProviderHook(
 
       // ── Combo LCD across nested combo-refs (T-NN) ───────────────────────
       // Combos can nest other combos via `kind: "combo-ref"` members
-      // (e.g. MASTER-LIGHT contains OldLLM, KIRO, Opecode Zen FREE). The
+      // (e.g. MASTER-LIGHT contains LEGACY, KIRO, Opecode Zen FREE). The
       // nested combo's own `limit.context` is computed below in this same
       // loop, so we need a fixpoint iteration: if a combo-ref points at a
       // combo not yet processed, defer this combo and try again after the
@@ -4495,7 +4495,7 @@ export function buildStaticProviderEntry(
   // ── Combo LCD across nested combo-refs (T-NN mirror) ─────────────────
   // Mirror of the dynamic-catalog fixpoint iteration: combos can nest
   // other combos via `kind: "combo-ref"` members (e.g. MASTER-LIGHT
-  // contains OldLLM, KIRO, Opecode Zen FREE). The nested combo's own
+  // contains LEGACY, KIRO, Opecode Zen FREE). The nested combo's own
   // capabilities and limits are computed in this same loop, so we need
   // a fixpoint pass: if a combo-ref points at a combo not yet processed,
   // defer this combo and try again after the sibling combos catch up.

@@ -8,7 +8,7 @@ import {
   UC_PERSONA_IMAGE_URL,
   UC_DIRECT_IMAGE_URL,
 } from "../../open-sse/handlers/imageGeneration/providers/ucImage.ts";
-import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistry.ts";
+import { IMAGE_PROVIDERS, parseImageModel } from "../../open-sse/config/imageRegistry.ts";
 
 // A valid PERSONA credential (durable Clerk cookie + sid + uid in psd). No API
 // key, so the handler takes the persona web path (mint -> POST -> poll).
@@ -49,6 +49,25 @@ test("uc is registered in IMAGE_PROVIDERS with the uc-image format + 22 models",
   assert.equal(entry.format, "uc-image");
   assert.match(String(entry.baseUrl), /internal\.chatuncensored\.ai\/v2\/image-gen/);
   assert.equal((entry.models ?? []).length, 22);
+});
+
+test("uc image models require an explicit prefix when an existing provider owns the bare id", () => {
+  assert.deepEqual(parseImageModel("uc/nano-banana"), {
+    provider: "uc",
+    model: "nano-banana",
+  });
+  assert.deepEqual(parseImageModel("uc/z-image-turbo"), {
+    provider: "uc",
+    model: "z-image-turbo",
+  });
+  assert.deepEqual(parseImageModel("nano-banana"), {
+    provider: "adobe-firefly",
+    model: "nano-banana",
+  });
+  assert.deepEqual(parseImageModel("z-image-turbo"), {
+    provider: "nanogpt",
+    model: "z-image-turbo",
+  });
 });
 
 // --- Pure helpers --------------------------------------------------------
@@ -226,7 +245,9 @@ test("handleUcImageGeneration (persona) 401s (retryable) when the credential is 
 test("handleUcImageGeneration (persona) times out with 504 when the result never readies", async () => {
   const resultUrl = "https://gen.moveinwater.com/img_never.png";
   const fetchImpl = personaFetch({
-    pendingPolls: 1000, // never becomes ready within the window
+    // The injected no-op sleep can execute more than 1,000 polls inside 5 ms on
+    // fast runners, so use an unbounded pending count to make the timeout deterministic.
+    pendingPolls: Number.POSITIVE_INFINITY,
     resultUrl,
     jwt: fakeJwt("uid", FUTURE_EXP),
   });

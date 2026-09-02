@@ -28,6 +28,7 @@
  * path is unit-testable with no live network.
  */
 import { randomUUID } from "node:crypto";
+import { sanitizeErrorMessage } from "../../utils/error.ts";
 import { Buffer } from "node:buffer";
 
 import WebSocket from "ws";
@@ -151,7 +152,7 @@ export function runUcTtsSocket(input: UcTtsSocketInput): Promise<UcTtsSocketResu
     } catch (err) {
       resolve({
         audio: Buffer.alloc(0) as Buffer<ArrayBuffer>,
-        error: `ws connect failed: ${err instanceof Error ? err.message : String(err)}`,
+        error: `ws connect failed: ${sanitizeErrorMessage(err instanceof Error ? err.message : String(err))}`,
       });
       return;
     }
@@ -194,7 +195,7 @@ export function runUcTtsSocket(input: UcTtsSocketInput): Promise<UcTtsSocketResu
         });
         ws.send(JSON.stringify(frame));
       } catch (err) {
-        fail(`ws send failed: ${err instanceof Error ? err.message : String(err)}`);
+        fail(`ws send failed: ${sanitizeErrorMessage(err instanceof Error ? err.message : String(err))}`);
       }
     };
 
