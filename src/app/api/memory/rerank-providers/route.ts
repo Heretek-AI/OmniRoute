@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
     // Local rerank-capable provider_nodes appended after curated entries.
     const extra = [];
     try {
-      const { getCachedProviderNodes } = await import("@/lib/localDb");
+      const { getCachedProviderNodes } = await import("@/lib/db/readCache");
       const nodes = await getCachedProviderNodes();
       for (const n of Array.isArray(nodes) ? nodes : []) {
         const apiType = (n as { apiType?: string }).apiType || "";

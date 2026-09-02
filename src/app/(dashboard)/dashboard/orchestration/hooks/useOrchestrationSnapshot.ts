@@ -1,5 +1,9 @@
 "use client";
-/** Polls the 3 agent sources (allSettled), listens to the `requests` WS channel as a refetch trigger. */
+/**
+ * Polls the 3 agent sources (allSettled), listens to the `agents` WS channel as a refetch
+ * trigger, and relaxes the poll interval from 5s to 30s while that WS connection is up (the
+ * channel event still forces an immediate debounced refetch either way).
+ */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLiveDashboard } from "@/hooks/useLiveDashboard";
 import type { CloudAgentTask } from "@/lib/cloudAgent/types";
@@ -12,6 +16,7 @@ import { mergeSnapshot } from "../model/mergeSnapshot";
 import type { OrchSnapshot, SourceStatus } from "../model/orchestrationTypes";
 
 export const POLL_MS = 5_000;
+export const POLL_MS_WS_CONNECTED = 30_000;
 export const WS_REFETCH_DEBOUNCE_MS = 1_000;
 
 interface Raw {
@@ -135,9 +140,7 @@ export function useOrchestrationSnapshot() {
 
     pollRef.current = () => void poll();
     void poll();
-    const id = setInterval(() => void poll(), POLL_MS);
     return () => {
-      clearInterval(id);
       controller.abort();
       if (debounceRef.current) {
         clearTimeout(debounceRef.current);
@@ -150,10 +153,10 @@ export function useOrchestrationSnapshot() {
     pollRef.current();
   }, []);
 
-  useLiveDashboard({
-    channels: ["requests"],
+  const { connection } = useLiveDashboard({
+    channels: ["agents"],
     onEvent: (payload) => {
-      if (payload.channel !== "requests") return;
+      if (payload.channel !== "agents") return;
       if (debounceRef.current) return; // debounce burst → one refetch
       debounceRef.current = setTimeout(() => {
         debounceRef.current = null;
@@ -161,6 +164,17 @@ export function useOrchestrationSnapshot() {
       }, WS_REFETCH_DEBOUNCE_MS);
     },
   });
+
+  // Adaptive poll interval, separated from the mount effect above: a connected `agents` WS
+  // already pushes refetches on change, so the background poll only needs to be a slow safety
+  // net (30s) — it falls back to the tighter 5s cadence while the WS is down. Declared AFTER
+  // the mount effect so `pollRef.current` is already populated (its initial value is a safe
+  // no-op) by the time this effect's first tick can fire.
+  const wsConnected = connection.isConnected;
+  useEffect(() => {
+    const id = setInterval(() => pollRef.current(), wsConnected ? POLL_MS_WS_CONNECTED : POLL_MS);
+    return () => clearInterval(id);
+  }, [wsConnected]);
 
   const snapshot: OrchSnapshot = useMemo(
     () =>
