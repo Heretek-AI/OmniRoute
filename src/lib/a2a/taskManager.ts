@@ -13,6 +13,20 @@
 
 import { randomUUID } from "crypto";
 
+import { emit } from "@/lib/events/eventBus";
+
+/**
+ * Publish an `agent.task.updated` transition for the orchestration canvas (Fase 2, Task B2).
+ * Best-effort: a listener throwing must never break the task write path that triggered it.
+ */
+function emitAgentTaskUpdated(source: "cloud-agent" | "a2a", taskId: string, state: string): void {
+  try {
+    emit("agent.task.updated", { source, taskId, state, timestamp: Date.now() });
+  } catch {
+    /* listeners never derail the write path */
+  }
+}
+
 // ============ Types ============
 
 export type TaskState = "submitted" | "working" | "completed" | "failed" | "cancelled";
@@ -114,6 +128,7 @@ export class A2ATaskManager {
       ...(owner !== undefined ? { owner } : {}),
     };
     this.tasks.set(task.id, task);
+    emitAgentTaskUpdated("a2a", task.id, "submitted");
     return task;
   }
 
@@ -158,6 +173,7 @@ export class A2ATaskManager {
     task.events.push({ timestamp: now, state, message });
     if (artifacts) task.artifacts.push(...artifacts);
 
+    emitAgentTaskUpdated("a2a", taskId, state);
     return task;
   }
 
@@ -243,6 +259,7 @@ export class A2ATaskManager {
         task.state = "failed";
         task.updatedAt = now.toISOString();
         task.events.push({ timestamp: now.toISOString(), state: "failed", message: "TTL expired" });
+        emitAgentTaskUpdated("a2a", id, "failed");
       }
       // Remove terminal tasks older than 2x TTL
       if (
