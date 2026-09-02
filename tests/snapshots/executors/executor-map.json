@@ -90,6 +90,11 @@
       "configSource": "<custom-config>",
       "provider": "chatgpt-web-codex"
     },
+    "chatgpt-web": {
+      "className": "ChatGptWebExecutor",
+      "configSource": "<custom-config>",
+      "provider": "chatgpt-web"
+    },
     "chatgpt-web-codex": {
       "className": "ChatGptWebCodexExecutor",
       "configSource": "<custom-config>",
@@ -550,20 +555,10 @@
       "configSource": "<custom-config>",
       "provider": "tencent-aistudio-web"
     },
-    "theoldllm": {
-      "className": "TheOldLlmExecutor",
-      "configSource": "<custom-config>",
-      "provider": "theoldllm"
-    },
     "tinycms-web": {
       "className": "TinyCmsExecutor",
       "configSource": "<custom-config>",
       "provider": "tinycms-web"
-    },
-    "tllm": {
-      "className": "TheOldLlmExecutor",
-      "configSource": "<custom-config>",
-      "provider": "theoldllm"
     },
     "trae": {
       "className": "TraeExecutor",
@@ -676,6 +671,6 @@
       "provider": "zai-web"
     }
   },
-  "keyCount": 135,
+  "keyCount": 134,
   "sharedInstances": []
 }

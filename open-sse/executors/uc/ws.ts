@@ -14,6 +14,7 @@
  * fake socket (same pattern as muse-spark-web).
  */
 import WebSocket from "ws";
+import { sanitizeErrorMessage } from "../../utils/error.ts";
 
 import { UC_ORIGIN, UC_WS_HOST, UC_WS_TIMEOUT_MS } from "./constants.ts";
 import { buildPersonaFrame, type UcHistoryEntry } from "./protocol.ts";
@@ -82,7 +83,7 @@ export function runUcTurn(input: UcTurnInput): Promise<UcTurnResult> {
       resolve({
         content: "",
         reasoning: "",
-        error: `ws connect failed: ${err instanceof Error ? err.message : String(err)}`,
+        error: `ws connect failed: ${sanitizeErrorMessage(err instanceof Error ? err.message : String(err))}`,
       });
       return;
     }
@@ -126,7 +127,7 @@ export function runUcTurn(input: UcTurnInput): Promise<UcTurnResult> {
         });
         ws.send(JSON.stringify(frame));
       } catch (err) {
-        fail(`ws send failed: ${err instanceof Error ? err.message : String(err)}`);
+        fail(`ws send failed: ${sanitizeErrorMessage(err instanceof Error ? err.message : String(err))}`);
       }
     };
 

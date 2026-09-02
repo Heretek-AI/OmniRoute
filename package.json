@@ -22,7 +22,6 @@
     "src/types/",
     ".env.example",
     "scripts/build/postinstall.mjs",
-    "scripts/build/fixTlsClientNodeBinary.mjs",
     "scripts/build/fixPlaywrightAndroid.mjs",
     "bin/cli/runtime/",
     "scripts/postinstall.mjs",
@@ -38,6 +37,10 @@
     "scripts/build/backendOnlyPages.mjs",
     "scripts/build/build-tproxy-native.mjs",
     "scripts/build/native-binary-compat.mjs",
+    "scripts/build/wreqJsNative.mjs",
+    "config/release/wreq-js-native-manifest.json",
+    "config/release/wreq-js-rust-license-inventory.json",
+    "config/release/wreq-js-rust-notices.md",
     "scripts/build/build-next-isolated.mjs",
     "scripts/build/runtime-env.mjs",
     "scripts/packs/optionalPackManifest.mjs",
@@ -362,8 +365,7 @@
     "keytar": "^7.9.0",
     "onnxruntime-node": "1.24.3",
     "sqlite-vec": "^0.1.9",
-    "tls-client-node": "^0.2.0",
-    "wreq-js": "^3.2.0"
+    "wreq-js": "3.2.0"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
@@ -396,7 +398,7 @@
     "esbuild": "0.28.2",
     "eslint": "^10.9.0",
     "eslint-config-next": "16.3.3",
-    "eslint-plugin-react-hooks": "7.0.1",
+    "eslint-plugin-react-hooks": "7.1.1",
     "eslint-plugin-sonarjs": "^4.1.0",
     "espree": "^11.2.0",
     "fast-check": "^4.8.0",
@@ -455,7 +457,7 @@
   },
   "overrides": {
     "onnxruntime-node": "1.24.3",
-    "eslint-plugin-react-hooks": "7.0.1",
+    "eslint-plugin-react-hooks": "7.1.1",
     "fast-xml-parser": "^5.10.1",
     "sharp": "^0.35.4",
     "postcss": "^8.5.18",

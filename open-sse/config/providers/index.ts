@@ -122,6 +122,7 @@ import { blackbox_webProvider } from "./registry/blackbox/web/index.ts";
 import { uncloseaiProvider } from "./registry/uncloseai/index.ts";
 import { nscaleProvider } from "./registry/nscale/index.ts";
 import { chatgpt_web_codexProvider } from "./registry/chatgpt-web-codex/index.ts";
+import { chatgpt_webProvider } from "./registry/chatgpt-web/index.ts";
 import { openrouterProvider } from "./registry/openrouter/index.ts";
 import { cheaperinferenceProvider } from "./registry/cheaperinference/index.ts";
 import { openvectaProvider } from "./registry/openvecta/index.ts";
@@ -205,7 +206,6 @@ import { gemini_businessProvider } from "./registry/gemini/business/index.ts";
 import { clineProvider } from "./registry/cline/index.ts";
 import { herokuProvider } from "./registry/heroku/index.ts";
 import { bluesmindsProvider } from "./registry/bluesminds/index.ts";
-import { theoldllmProvider } from "./registry/theoldllm/index.ts";
 import { baiduProvider } from "./registry/baidu/index.ts";
 import { pollinationsProvider } from "./registry/pollinations/index.ts";
 import { veoaifree_webProvider } from "./registry/veoaifree-web/index.ts";
@@ -392,6 +392,7 @@ export const REGISTRY: Record<string, RegistryEntry> = {
   uncloseai: uncloseaiProvider,
   nscale: nscaleProvider,
   "chatgpt-web-codex": chatgpt_web_codexProvider,
+  "chatgpt-web": chatgpt_webProvider,
   openrouter: openrouterProvider,
   cheaperinference: cheaperinferenceProvider,
   openvecta: openvectaProvider,
@@ -476,7 +477,6 @@ export const REGISTRY: Record<string, RegistryEntry> = {
   cline: clineProvider,
   heroku: herokuProvider,
   bluesminds: bluesmindsProvider,
-  theoldllm: theoldllmProvider,
   baidu: baiduProvider,
   pollinations: pollinationsProvider,
   "veoaifree-web": veoaifree_webProvider,

@@ -34,7 +34,7 @@ Use the dashboard at `/dashboard/providers` to enable, configure, and test each 
 
 ---
 
-## No-auth Providers (no key required) (12)
+## No-auth Providers (no key required) (11)
 
 | ID | Alias | Name | Tags | Website | Notes | Tool calling |
 |----|-------|------|------|---------|-------|--------------|
@@ -46,7 +46,6 @@ Use the dashboard at `/dashboard/providers` to enable, configure, and test each 
 | `devin-cli-agentic` | `dva` | Devin CLI Agentic Bridge | No-auth | [link](https://docs.devin.ai/work-with-devin/devin-cli) | Authentication is owned by the official Devin CLI in its isolated bridge volume. | emulated |
 | `duckduckgo-web` | `ddgw` | DuckDuckGo AI Chat | No-auth | [link](https://duckduckgo.com/duckchat) | No credentials required — DuckDuckGo AI Chat is anonymous and free. | emulated |
 | `opencode` | `oc` | OpenCode Free | No-auth | [link](https://opencode.ai) | No API key required — uses OpenCode's public free endpoint. | — |
-| `theoldllm` | `tllm` | The Old LLM (Free) | No-auth | [link](https://theoldllm.vercel.app) | No credentials required. The executor auto-generates access tokens via an embedded Playwright browser instance. | — |
 | `uncloseai` | `unc` | UncloseAI | No-auth | [link](https://uncloseai.com) | No auth required. API accepts any non-empty string as key for identification. If older built-in models return 404, use Available Models → Import from /models or Auto-Sync; verified live model: solidrust/Hermes-3-Llama-3.1-8B-AWQ. | — |
 | `veoaifree-web` | `veo-free` | Veo AI Free | No-auth, video | [link](https://veoaifree.com) | No auth required. Rate limited to 6 requests/hour per IP. | — |
 | `zcode` | `zc` | ZCode (GLM Coding Plan) | No-auth | [link](https://zcode.z.ai) | No API key stored by OmniRoute. The local ZCode app-server uses the existing builtin:zai-coding-plan login. | — |
@@ -80,13 +79,14 @@ Use the dashboard at `/dashboard/providers` to enable, configure, and test each 
 | `zed` | `zd` | Zed IDE | OAuth | [link](https://zed.dev) | Zed stores LLM provider credentials (OpenAI, Anthropic, Google, Mistral, xAI) in the OS keychain. Use the Import button below to discover and import them automatically. |
 | `zed-hosted` | — | Zed Hosted Models | OAuth | [link](https://zed.dev) | Sign in with your Zed account (native-app sign-in). OmniRoute generates a one-time RSA keypair and opens zed.dev to authorize it — on a remote/headless install, copy the resulting 127.0.0.1 callback URL from your browser's address bar and paste it back here. Distinct from the 'Zed IDE' credential-import entry above: this proxies chat completions through Zed's own hosted model aggregator (cloud.zed.dev), fronting Anthropic/OpenAI/Google/xAI models under your Zed plan. |
 
-## Web Cookie Providers (33)
+## Web Cookie Providers (34)
 
 | ID | Alias | Name | Tags | Website | Notes | Tool calling |
 |----|-------|------|------|---------|-------|--------------|
 | `adapta-web` | `adp-web` | Adapta.org (Adapta One Web) | Web cookie | [link](https://agent.adapta.one) | Paste your __client cookie value from .clerk.agent.adapta.one (DevTools → Application → Cookies) | emulated |
 | `adobe-firefly` | `firefly` | Adobe Firefly (Image/Video) | Web cookie | [link](https://firefly.adobe.com) | RECOMMENDED: firefly.adobe.com signed-in → F12 → Network → click firefly-3p.ff.adobe.io (generate-async or models/discovery) → Request Headers → Authorization → copy the token AFTER 'Bearer ' (starts with eyJ…). Cookie-only from firefly.adobe.com mints a GUEST token → 401/403; only multi-domain IMS cookies (adobelogin.com) or that Bearer JWT work. Unofficial/experimental media + Limits. | — |
 | `blackbox-web` | `bb-web` | Blackbox Web (Subscription) | Web cookie | [link](https://app.blackbox.ai) | Paste your __Secure-authjs.session-token value or full cookie header from app.blackbox.ai | emulated |
+| `chatgpt-web` | — | ChatGPT Web (Clean Room) | Web cookie | [link](https://chatgpt.com) | Paste Playwright-compatible storage-state JSON exported from a logged-in chatgpt.com browser context. Cookie headers and individual token values are not accepted. | none |
 | `chatgpt-web-codex` | `cgpt-codex` | ChatGPT Web (Codex) | Web cookie | [link](https://chatgpt.com) | Paste the full ChatGPT Cookie header. OmniRoute verifies it in an isolated headless browser profile. | native |
 | `claude-web` | `cw` | Claude Web | Web cookie | [link](https://claude.ai) | Paste your session cookie from claude.ai | none |
 | `conol-web` | `cnl` | Conol (Unofficial/Experimental) | Web cookie | [link](https://conol.ai) | Use browser sign-in, or paste the full Cookie header from conol.ai. The __Secure-better-auth.session_token cookie is required. | — |
