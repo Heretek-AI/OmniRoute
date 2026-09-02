@@ -15,6 +15,7 @@ export const APIKEY_PROVIDERS_FRONTIER = {
   },
   reka: {
     id: "reka",
+    serviceKinds: ["llm"],
     alias: "reka",
     name: "Reka",
     icon: "auto_awesome",
@@ -43,6 +44,20 @@ export const APIKEY_PROVIDERS_FRONTIER = {
     },
     hasFree: true,
     freeNote: "$75 free usage credits — no credit card required",
+    serviceKinds: ["llm"],
+  },
+  "uc-direct": {
+    id: "uc-direct",
+    alias: "ucd",
+    name: "UC Direct (uncensored.com)",
+    icon: "auto_awesome",
+    color: "#111827",
+    textIcon: "UD",
+    website: "https://uncensored.com",
+    authHint:
+      "Use your uncensored.com Developer API key (uai_sk_live_...). OmniRoute sends it as the X-api-key header to the OpenAI-compatible https://api.uncensored.com/api/v1 endpoint. The key never expires. This is the metered/credits surface; the un-metered subscription chat is the separate 'uc' provider.",
+    apiHint:
+      "UC Direct is OpenAI-compatible on /api/v1. OmniRoute probes /api/v1/models (public) and routes chat traffic to /api/v1/chat/completions. Errors: 402 out of credits, 403 moderation/scope, 429 rate limit.",
     serviceKinds: ["llm"],
   },
   anthropic: {
@@ -82,6 +97,7 @@ export const APIKEY_PROVIDERS_FRONTIER = {
   },
   blackbox: {
     id: "blackbox",
+    serviceKinds: ["llm"],
     alias: "bb",
     name: "Blackbox AI",
     icon: "view_in_ar",
@@ -128,6 +144,7 @@ export const APIKEY_PROVIDERS_FRONTIER = {
   },
   perplexity: {
     id: "perplexity",
+    serviceKinds: ["llm"],
     alias: "pplx",
     name: "Perplexity",
     icon: "search",
@@ -152,6 +169,7 @@ export const APIKEY_PROVIDERS_FRONTIER = {
   },
   cohere: {
     id: "cohere",
+    serviceKinds: ["llm"],
     alias: "cohere",
     name: "Cohere",
     icon: "hub",
@@ -163,6 +181,7 @@ export const APIKEY_PROVIDERS_FRONTIER = {
   },
   "meta-llama": {
     id: "meta-llama",
+    serviceKinds: ["llm"],
     alias: "meta",
     name: "Meta Llama API",
     icon: "smart_toy",
@@ -172,6 +191,7 @@ export const APIKEY_PROVIDERS_FRONTIER = {
   },
   morph: {
     id: "morph",
+    serviceKinds: ["llm"],
     alias: "morph",
     name: "Morph",
     icon: "auto_fix_high",
@@ -183,6 +203,7 @@ export const APIKEY_PROVIDERS_FRONTIER = {
   },
   galadriel: {
     id: "galadriel",
+    serviceKinds: ["llm"],
     alias: "galadriel",
     name: "Galadriel",
     icon: "auto_awesome",
@@ -197,6 +218,7 @@ export const APIKEY_PROVIDERS_FRONTIER = {
   },
   ai21: {
     id: "ai21",
+    serviceKinds: ["llm"],
     alias: "ai21",
     name: "AI21 Labs",
     icon: "psychology_alt",
@@ -208,6 +230,7 @@ export const APIKEY_PROVIDERS_FRONTIER = {
   },
   venice: {
     id: "venice",
+    serviceKinds: ["llm"],
     alias: "venice",
     name: "Venice.ai",
     icon: "travel_explore",
@@ -217,6 +240,7 @@ export const APIKEY_PROVIDERS_FRONTIER = {
   },
   codestral: {
     id: "codestral",
+    serviceKinds: ["llm"],
     alias: "codestral",
     name: "Codestral",
     icon: "terminal",
@@ -226,6 +250,7 @@ export const APIKEY_PROVIDERS_FRONTIER = {
   },
   upstage: {
     id: "upstage",
+    serviceKinds: ["llm"],
     alias: "upstage",
     name: "Upstage",
     icon: "trending_up",
@@ -235,6 +260,7 @@ export const APIKEY_PROVIDERS_FRONTIER = {
   },
   maritalk: {
     id: "maritalk",
+    serviceKinds: ["llm"],
     alias: "maritalk",
     name: "Maritalk",
     icon: "translate",
@@ -244,6 +270,7 @@ export const APIKEY_PROVIDERS_FRONTIER = {
   },
   "nous-research": {
     id: "nous-research",
+    serviceKinds: ["llm"],
     alias: "nous",
     name: "Nous Research",
     icon: "hub",
@@ -259,6 +286,7 @@ export const APIKEY_PROVIDERS_FRONTIER = {
   },
   "arcee-ai": {
     id: "arcee-ai",
+    serviceKinds: ["llm"],
     alias: "arcee",
     name: "Arcee AI",
     icon: "auto_awesome",
@@ -272,6 +300,7 @@ export const APIKEY_PROVIDERS_FRONTIER = {
   },
   liquid: {
     id: "liquid",
+    serviceKinds: ["llm"],
     alias: "liquid",
     name: "Liquid AI",
     icon: "water_drop",
@@ -286,6 +315,7 @@ export const APIKEY_PROVIDERS_FRONTIER = {
   },
   inception: {
     id: "inception",
+    serviceKinds: ["llm"],
     alias: "inception",
     name: "Inception",
     icon: "auto_awesome",
@@ -299,6 +329,7 @@ export const APIKEY_PROVIDERS_FRONTIER = {
   },
   writer: {
     id: "writer",
+    serviceKinds: ["llm"],
     alias: "writer",
     name: "Writer",
     icon: "auto_awesome",
@@ -311,6 +342,7 @@ export const APIKEY_PROVIDERS_FRONTIER = {
   },
   "muse-code": {
     id: "muse-code",
+    serviceKinds: ["llm"],
     alias: "mc",
     name: "Muse Code (Meta)",
     icon: "auto_awesome",

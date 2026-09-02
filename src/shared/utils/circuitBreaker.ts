@@ -150,6 +150,25 @@ interface CircuitBreakerOptions {
   backoffEscalationCount?: number;
 }
 
+/**
+ * How a RESOLVED `execute()` result is accounted (#12254). Callers such as
+ * `handleChatCore()` report most upstream failures by resolving with
+ * `{ success: false, status: 5xx }` instead of throwing, so a breaker that reads every
+ * resolution as a success never trips on that path.
+ */
+export type CircuitBreakerResultOutcome = "success" | "failure" | "ignore";
+
+export interface CircuitBreakerExecuteOptions<T> {
+  /**
+   * Classify a resolved result. Omitted: every resolution is a success (the
+   * throw-based contract every other caller relies on). Return "ignore" when the
+   * call site accounts for the outcome itself with request context the breaker
+   * does not have — the chat path does (`classifyProviderBreakerResult()` in
+   * chat.ts, `recordProviderFailure()`/`recordProviderSuccess()` in combo.ts).
+   */
+  classifyResult?: (result: T) => CircuitBreakerResultOutcome;
+}
+
 export interface TransitionRecord {
   from: string;
   to: string;
@@ -300,7 +319,7 @@ export class CircuitBreaker {
     );
   }
 
-  async execute<T>(fn: () => Promise<T>): Promise<T> {
+  async execute<T>(fn: () => Promise<T>, options?: CircuitBreakerExecuteOptions<T>): Promise<T> {
     this._refreshOpenState();
 
     if (this.state === STATE.OPEN) {
@@ -325,7 +344,7 @@ export class CircuitBreaker {
 
     try {
       const result = await fn();
-      this._onSuccess();
+      this._recordResolvedResult(result, options?.classifyResult);
       return result;
     } catch (error) {
       if (this.isFailure(error)) {
@@ -386,6 +405,29 @@ export class CircuitBreaker {
   }
 
   // ─── Internal ─────────────────────────────────
+
+  /**
+   * Account a resolved `execute()` result exactly once. A classifier that throws
+   * falls back to the legacy "resolved = success" reading, mirroring `classifyError`.
+   */
+  _recordResolvedResult<T>(
+    result: T,
+    classifyResult?: (result: T) => CircuitBreakerResultOutcome
+  ): void {
+    let outcome: CircuitBreakerResultOutcome = "success";
+    if (classifyResult) {
+      try {
+        outcome = classifyResult(result);
+      } catch {
+        outcome = "success";
+      }
+    }
+    if (outcome === "failure") {
+      this._onFailure();
+    } else if (outcome === "success") {
+      this._onSuccess();
+    }
+  }
 
   _onSuccess() {
     if (this.state === STATE.OPEN) {

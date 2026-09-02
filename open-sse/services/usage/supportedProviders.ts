@@ -76,4 +76,8 @@ export const USAGE_SUPPORTED_PROVIDERS: readonly string[] = [
   "agentrouter",
   // Kilo Code personal USD balance (GET /api/profile/balance, existing OAuth token)
   "kilocode",
+  // OpenRouter key limits + account credits (GET /api/v1/key + /api/v1/credits)
+  "openrouter",
+  // Devin CLI agentic quota (Codeium seat-management GetUserStatus, protobuf)
+  "devin-cli",
 ];

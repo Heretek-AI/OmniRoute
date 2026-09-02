@@ -1904,7 +1904,8 @@ test("chatCore downgrades unsupported xhigh effort for assistant-prefill OpenAI-
 
   assert.equal(result.success, true);
   assert.equal(call.body.model, "glm-5.1");
-  assert.equal(call.body.reasoning_effort, "high");
+  // GLM 5.1+ natively uses `max` as the top tier (#11875); xhigh maps to max.
+  assert.equal(call.body.reasoning_effort, "max");
 });
 test("chatCore logs chat completions endpoint as OpenAI protocol", async () => {
   const { call, result } = await invokeChatCore({

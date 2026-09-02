@@ -83,13 +83,23 @@ function baseCtx(overrides: Record<string, unknown> = {}) {
   } as Parameters<typeof persistAttemptLogs>[1];
 }
 
-async function pollForCallLog(id: string, tries = 120) {
-  for (let i = 0; i < tries; i++) {
+// The attempt log is persisted asynchronously, so the row is polled rather than
+// read once. The budget is a wall-clock deadline instead of a fixed try count:
+// at 120 tries x 20ms the ceiling was 2.4s, and on a loaded runner the SQLite
+// write routinely takes longer than that — the poll returned null and the
+// assertions failed as "expected: true, actual: false", which reads like a
+// redaction defect rather than a starved runner. 30s is far past any healthy
+// write while still bounded, and a fast machine still returns on the first pass.
+const POLL_DEADLINE_MS = 30_000;
+
+async function pollForCallLog(id: string, deadlineMs = POLL_DEADLINE_MS) {
+  const deadline = Date.now() + deadlineMs;
+  for (;;) {
     const row = await getCallLogById(id);
     if (row) return row as Record<string, unknown>;
+    if (Date.now() >= deadline) return null;
     await new Promise((r) => setTimeout(r, 20));
   }
-  return null;
 }
 
 function persistedPartText(requestBody: unknown): string {

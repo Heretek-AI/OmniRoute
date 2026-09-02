@@ -9,18 +9,20 @@ vi.mock("next-intl", () => ({
 }));
 
 const replaceMock = vi.fn();
+const searchState = { current: "tab=overview" };
 vi.mock("next/navigation", () => ({
-  useSearchParams: () => new URLSearchParams("tab=overview"),
+  useSearchParams: () => new URLSearchParams(searchState.current),
   useRouter: () => ({ replace: replaceMock }),
   usePathname: () => "/dashboard/orchestration",
 }));
 
-const snapshot = {
+const DEFAULT_SNAPSHOT = {
   nodes: [{ id: "orchestrator", kind: "orchestrator", label: "OmniRoute" }],
   edges: [],
   sources: [],
   generatedAt: "x",
 };
+let snapshot: typeof DEFAULT_SNAPSHOT = DEFAULT_SNAPSHOT;
 const setShowCompletedMock = vi.fn();
 const refetchMock = vi.fn();
 vi.mock("@/app/(dashboard)/dashboard/orchestration/hooks/useOrchestrationSnapshot", () => ({
@@ -45,14 +47,30 @@ vi.mock("@/hooks/useProviderBreakerHealth", () => ({
   useProviderBreakerHealth: () => ({ providerHealth: {}, connectionHealth: {} }),
 }));
 
+const agentsTabCalls: Record<string, unknown>[] = [];
 vi.mock("@/app/(dashboard)/dashboard/orchestration/tabs/AgentsTab", () => ({
-  AgentsTab: () => <div data-testid="agents-tab-stub" />,
+  AgentsTab: (props: Record<string, unknown>) => {
+    agentsTabCalls.push(props);
+    return <div data-testid="agents-tab-stub" />;
+  },
 }));
 vi.mock("@/app/(dashboard)/dashboard/orchestration/tabs/RoutingTab", () => ({
   RoutingTab: () => <div data-testid="routing-tab-stub" />,
 }));
+const overviewTabCalls: Record<string, unknown>[] = [];
 vi.mock("@/app/(dashboard)/dashboard/orchestration/tabs/OverviewTab", () => ({
-  OverviewTab: () => <div data-testid="overview-tab-stub" />,
+  OverviewTab: (props: Record<string, unknown>) => {
+    overviewTabCalls.push(props);
+    return <div data-testid="overview-tab-stub" />;
+  },
+}));
+
+const drawerCalls: Record<string, unknown>[] = [];
+vi.mock("@/app/(dashboard)/dashboard/orchestration/drawer/OrchestrationDrawer", () => ({
+  OrchestrationDrawer: (props: Record<string, unknown>) => {
+    drawerCalls.push(props);
+    return <div data-testid="drawer-stub" />;
+  },
 }));
 
 import OrchestrationPageClient from "@/app/(dashboard)/dashboard/orchestration/OrchestrationPageClient";
@@ -73,6 +91,11 @@ function render(el: React.ReactElement) {
 afterEach(() => {
   document.body.innerHTML = "";
   replaceMock.mockClear();
+  searchState.current = "tab=overview";
+  snapshot = DEFAULT_SNAPSHOT;
+  agentsTabCalls.length = 0;
+  overviewTabCalls.length = 0;
+  drawerCalls.length = 0;
 });
 
 describe("OrchestrationPageClient", () => {
@@ -97,6 +120,137 @@ describe("OrchestrationPageClient", () => {
     const [url, opts] = replaceMock.mock.calls[0];
     expect(url).toContain("tab=agents");
     expect(opts).toEqual({ scroll: false });
+    cleanup();
+  });
+
+  it("?q=login filters the snapshot passed to OverviewTab down to matching work nodes", () => {
+    snapshot = {
+      nodes: [
+        { id: "orchestrator", kind: "orchestrator", label: "OmniRoute" },
+        {
+          id: "cloud-agent:1",
+          kind: "work",
+          source: "cloud-agent",
+          state: "running",
+          label: "login flow fix",
+        },
+        {
+          id: "a2a:2",
+          kind: "work",
+          source: "a2a",
+          state: "failed",
+          label: "unrelated task",
+        },
+      ],
+      edges: [],
+      sources: [],
+      generatedAt: "x",
+    } as never;
+    searchState.current = "tab=overview&q=login";
+    const { cleanup } = render(<OrchestrationPageClient />);
+    const lastProps = overviewTabCalls.at(-1) as { snapshot: typeof DEFAULT_SNAPSHOT };
+    const ids = lastProps.snapshot.nodes.map((n) => n.id);
+    expect(ids).toContain("cloud-agent:1");
+    expect(ids).not.toContain("a2a:2");
+    cleanup();
+  });
+
+  it("clicking a state chip in the toolbar sets ?state= via router.replace", () => {
+    searchState.current = "tab=agents";
+    const { c, cleanup } = render(<OrchestrationPageClient />);
+    const runningChip = Array.from(c.querySelectorAll("button")).find(
+      (el) => el.textContent === "stateRunning"
+    ) as HTMLButtonElement;
+    expect(runningChip).toBeTruthy();
+    act(() => {
+      runningChip.click();
+    });
+    expect(replaceMock).toHaveBeenCalledTimes(1);
+    const [url] = replaceMock.mock.calls[0];
+    expect(url).toContain("state=running");
+    cleanup();
+  });
+
+  it("toggling a collapse from AgentsTab writes ?collapsed= via router.replace", () => {
+    searchState.current = "tab=agents";
+    const { cleanup } = render(<OrchestrationPageClient />);
+    const props = agentsTabCalls.at(-1) as { onToggleCollapse: (s: string) => void };
+    act(() => {
+      props.onToggleCollapse("a2a");
+    });
+    expect(replaceMock).toHaveBeenCalledTimes(1);
+    const [url] = replaceMock.mock.calls[0];
+    expect(url).toContain("collapsed=a2a");
+    cleanup();
+  });
+
+  it("shows a clear-filters button only when the filter is non-empty, and it resets q/state/source/provider", () => {
+    searchState.current = "tab=agents";
+    const r1 = render(<OrchestrationPageClient />);
+    expect(
+      Array.from(r1.c.querySelectorAll("button")).find((el) => el.textContent === "clearFilters")
+    ).toBeFalsy();
+    r1.cleanup();
+
+    searchState.current =
+      "tab=agents&q=login&state=running&source=a2a&provider=devin&collapsed=a2a";
+    const r2 = render(<OrchestrationPageClient />);
+    const clearButton = Array.from(r2.c.querySelectorAll("button")).find(
+      (el) => el.textContent === "clearFilters"
+    ) as HTMLButtonElement;
+    expect(clearButton).toBeTruthy();
+    act(() => {
+      clearButton.click();
+    });
+    expect(replaceMock).toHaveBeenCalledTimes(1);
+    const [url] = replaceMock.mock.calls[0];
+    expect(url).not.toContain("q=");
+    expect(url).not.toContain("state=");
+    expect(url).not.toContain("source=");
+    expect(url).not.toContain("provider=");
+    expect(url).toContain("collapsed=a2a");
+    r2.cleanup();
+  });
+
+  it("?node=<id> opens the drawer with the matching node; removing the param closes it", () => {
+    snapshot = {
+      nodes: [
+        { id: "orchestrator", kind: "orchestrator", label: "OmniRoute" },
+        {
+          id: "cloud-agent:1",
+          kind: "work",
+          source: "cloud-agent",
+          state: "running",
+          label: "task A",
+        },
+      ],
+      edges: [],
+      sources: [],
+      generatedAt: "x",
+    } as never;
+
+    searchState.current = "tab=agents&node=cloud-agent:1";
+    const r1 = render(<OrchestrationPageClient />);
+    expect((drawerCalls.at(-1) as { node: { id: string } | null }).node?.id).toBe("cloud-agent:1");
+    r1.cleanup();
+
+    searchState.current = "tab=agents";
+    const r2 = render(<OrchestrationPageClient />);
+    expect((drawerCalls.at(-1) as { node: { id: string } | null }).node).toBeNull();
+    r2.cleanup();
+  });
+
+  it("clicking an overflow node (via AgentsTab's onNodeClick) navigates to ?tab=overview and clears ?node", () => {
+    searchState.current = "tab=agents&node=cloud-agent:1";
+    const { cleanup } = render(<OrchestrationPageClient />);
+    const props = agentsTabCalls.at(-1) as { onNodeClick: (id: string) => void };
+    act(() => {
+      props.onNodeClick("overflow:cloud-agent");
+    });
+    expect(replaceMock).toHaveBeenCalledTimes(1);
+    const [url] = replaceMock.mock.calls[0];
+    expect(url).toContain("tab=overview");
+    expect(url).not.toContain("node=");
     cleanup();
   });
 });

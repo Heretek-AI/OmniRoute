@@ -6199,6 +6199,22 @@ paths:
         "200":
           description: Health status
 
+  /api/monitoring/compression:
+    get:
+      tags: [System]
+      summary: Get compression result-memo statistics
+      description: >-
+        In-process compression result-memo observability snapshot — size, capacity,
+        lifetime hits/misses/hitRate plus 1m/5m/15m/1h windowed rates. Lightweight
+        (no DB, no provider reads) companion to `GET /api/monitoring/health` intended
+        for frequent polling. Sent with `Cache-Control: no-store, no-cache,
+        must-revalidate`. Counters reset on process restart.
+      responses:
+        "200":
+          description: Compression memo stats (`compression.memo` + `timestamp`)
+        "503":
+          description: Compression stats unavailable
+
   /api/rate-limits:
     get:
       tags: [System]

@@ -81,6 +81,12 @@ function deriveActionAvailability(route: SourceRoute | null, node: OrchNode | nu
   return { canApprove, canCancel };
 }
 
+/** Origin-tagged detail error, so the drawer can pick `detailFailed` vs `actionFailed` honestly. */
+export interface DrawerError {
+  kind: "detail" | "action";
+  text: string;
+}
+
 /**
  * Resets `detail`/`error`/`isLoading` during render when the selected node
  * identity changes — React's documented "adjust state when a prop changes"
@@ -90,7 +96,7 @@ function useSyncedNodeIdentity(
   node: OrchNode | null,
   route: SourceRoute | null,
   setDetail: (d: unknown | null) => void,
-  setError: (e: string | null) => void,
+  setError: (e: DrawerError | null) => void,
   setIsLoading: (b: boolean) => void
 ) {
   const [syncedId, setSyncedId] = useState<string | undefined>(undefined);
@@ -114,7 +120,7 @@ function useFetchDetail(
   node: OrchNode | null,
   route: SourceRoute | null,
   setDetail: (d: unknown | null) => void,
-  setError: (e: string | null) => void,
+  setDetailError: (text: string) => void,
   setIsLoading: (b: boolean) => void
 ) {
   useEffect(() => {
@@ -124,7 +130,7 @@ function useFetchDetail(
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
       .then((body) => setDetail(unwrapDetailBody(node.id, body)))
       .catch((err) => {
-        if (!controller.signal.aborted) setError(toSafeErrorText(err));
+        if (!controller.signal.aborted) setDetailError(toSafeErrorText(err));
       })
       .finally(() => setIsLoading(false));
     return () => controller.abort();
@@ -134,7 +140,7 @@ function useFetchDetail(
 
 async function performAction(
   req: { url: string; init: RequestInit } | null,
-  setError: (e: string | null) => void
+  setActionError: (text: string) => void
 ): Promise<boolean> {
   if (!req) return false;
   try {
@@ -142,7 +148,7 @@ async function performAction(
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return true;
   } catch (err) {
-    setError(toSafeErrorText(err));
+    setActionError(toSafeErrorText(err));
     return false;
   }
 }
@@ -150,21 +156,37 @@ async function performAction(
 export function useDrawerDetail(node: OrchNode | null) {
   const [detail, setDetail] = useState<unknown | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setErrorState] = useState<DrawerError | null>(null);
   const route = node ? routeFor(node) : null;
 
-  useSyncedNodeIdentity(node, route, setDetail, setError, setIsLoading);
-  useFetchDetail(node, route, setDetail, setError, setIsLoading);
+  const setDetailError = (text: string) => setErrorState({ kind: "detail", text });
+  const setActionError = (text: string) => setErrorState({ kind: "action", text });
+
+  useSyncedNodeIdentity(node, route, setDetail, setErrorState, setIsLoading);
+  useFetchDetail(node, route, setDetail, setDetailError, setIsLoading);
 
   const { canApprove, canCancel } = deriveActionAvailability(route, node);
+
+  const runAction = async (req: { url: string; init: RequestInit } | null): Promise<boolean> => {
+    if (busy) return false;
+    setBusy(true);
+    try {
+      return await performAction(req, setActionError);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return {
     detail,
     isLoading,
-    error,
+    busy,
+    error: error?.text ?? null,
+    errorKind: error?.kind ?? null,
     canApprove,
     canCancel,
-    approve: () => performAction(route?.approveReq ?? null, setError),
-    cancel: () => performAction(route?.cancelReq ?? null, setError),
+    approve: () => runAction(route?.approveReq ?? null),
+    cancel: () => runAction(route?.cancelReq ?? null),
   };
 }

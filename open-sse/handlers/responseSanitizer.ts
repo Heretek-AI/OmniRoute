@@ -12,6 +12,7 @@ import {
   applyCacheHitTokensToUsage,
   applyCacheHitTokensToResponsesUsage,
 } from "./responseSanitizer/cacheHitTokens.ts";
+import { stripObfuscationZeroWidth } from "../utils/zeroWidth.ts";
 export {
   extractThinkingFromContent,
   shouldParseTextualReasoningTags,
@@ -85,7 +86,7 @@ function deleteOpenAICompatibleReasoningFields(record: JsonRecord): void {
 }
 
 function stripZeroWidthText(value: string): string {
-  return value.replace(/[\u200B-\u200D\uFEFF]/g, "");
+  return stripObfuscationZeroWidth(value);
 }
 
 function stripZeroWidthToolArgumentJson(value: unknown): string {

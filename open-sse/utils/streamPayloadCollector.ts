@@ -1,6 +1,7 @@
 import { cloneLogPayload } from "@/lib/logPayloads";
 import { toNumber } from "@/shared/utils/numeric";
 import { FORMATS } from "../translator/formats.ts";
+import { jsonLength } from "./jsonSize.ts";
 
 type StructuredSSEEvent = {
   index: number;
@@ -914,7 +915,7 @@ export function createStructuredSSECollector(options: CollectorOptions = {}) {
         event.event = eventName;
       }
 
-      const serializedSize = JSON.stringify(event).length;
+      const serializedSize = jsonLength(event);
       if (events.length >= maxEvents || usedBytes + serializedSize > maxBytes) {
         droppedEvents += 1;
         return;

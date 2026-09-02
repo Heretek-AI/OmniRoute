@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, Suspense } from "react";
 import { Card, CardSkeleton, Badge, Button, CollapsibleSection } from "@/shared/components";
 import {
   AGGREGATOR_PROVIDER_IDS,
@@ -211,7 +211,7 @@ async function loadOauthEnvRepairStatus(): Promise<{
   }
 }
 
-export default function ProvidersPage() {
+function ProvidersPageContent() {
   const router = useRouter();
   const [connections, setConnections] = useState<any[]>([]);
   const [providerNodes, setProviderNodes] = useState<any[]>([]);
@@ -1892,6 +1892,14 @@ export default function ProvidersPage() {
         )}
       </div>
     </OpenRouterProviderStatsProvider>
+  );
+}
+
+export default function ProvidersPage() {
+  return (
+    <Suspense fallback={null}>
+      <ProvidersPageContent />
+    </Suspense>
   );
 }
 

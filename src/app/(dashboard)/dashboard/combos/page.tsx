@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, useRef, memo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, memo, Suspense } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -741,7 +741,7 @@ function formatComboEntryDisplay(
   return `${providerLabel}/${modelLabel}`;
 }
 
-export default function CombosPage() {
+function CombosPageContent() {
   const t = useTranslations("combos");
   const tc = useTranslations("common");
   const emailsVisible = useEmailPrivacyStore((s) => s.emailsVisible);
@@ -1370,6 +1370,14 @@ export default function CombosPage() {
         />
       )}
     </div>
+  );
+}
+
+export default function CombosPage() {
+  return (
+    <Suspense fallback={null}>
+      <CombosPageContent />
+    </Suspense>
   );
 }
 

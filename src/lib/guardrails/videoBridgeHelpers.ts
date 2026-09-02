@@ -10,6 +10,7 @@ import {
   type BrokerExtractionOptions,
   type BrokerExtractionResult,
 } from "./videoBridgeBrokerClient";
+import { decodeJpegFrameDataUri } from "./videoBridgeFrameContract";
 import {
   resolveVideoFocusWindow,
   type VideoFocusWindow,
@@ -316,16 +317,15 @@ export async function compareVideoFramesByGrayscale(
   signal?: AbortSignal
 ): Promise<number> {
   throwIfVideoDedupAborted(signal);
-  const decode = (dataUri: string): Buffer => {
-    const match = /^data:image\/jpeg;base64,([A-Za-z0-9+/=]+)$/i.exec(dataUri);
-    if (!match) throw new Error("Video frame is not a JPEG data URI");
-    return Buffer.from(match[1], "base64");
-  };
   const { default: sharp } = await import("sharp");
   throwIfVideoDedupAborted(signal);
   const [left, right] = await Promise.all(
     [previous, current].map((frame) =>
-      sharp(decode(frame.dataUri)).resize(16, 16, { fit: "fill" }).greyscale().raw().toBuffer()
+      sharp(decodeJpegFrameDataUri(frame.dataUri))
+        .resize(16, 16, { fit: "fill" })
+        .greyscale()
+        .raw()
+        .toBuffer()
     )
   );
   throwIfVideoDedupAborted(signal);

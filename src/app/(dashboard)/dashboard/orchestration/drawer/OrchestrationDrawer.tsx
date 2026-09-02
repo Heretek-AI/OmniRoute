@@ -1,11 +1,34 @@
 "use client";
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { StatusDot } from "@/shared/components/flow/StatusDot";
 import { orchStateColor, type OrchNode, type OrchState } from "../model/orchestrationTypes";
 import { useDrawerDetail } from "./useDrawerDetail";
+import type { DrawerError } from "./useDrawerDetail";
 import type { CloudAgentTask } from "@/lib/cloudAgent/types";
 import type { A2ATask } from "@/lib/a2a/taskManager";
+
+const TOAST_MS = 2500;
+
+/** Timeline normalized by source — the same data the Timeline component displays. */
+function normalizedTimeline(node: OrchNode, detail: unknown): unknown {
+  if (node.source === "cloud-agent") return (detail as CloudAgentTask | null)?.activities ?? [];
+  if (node.source === "a2a") return (detail as A2ATask | null)?.events ?? [];
+  return null; // conductor/overflow: the raw payload already is the trace
+}
+
+/** Builds the copy-to-clipboard JSON payload for the drawer's "copy trace" action. */
+export function buildTraceJson(node: OrchNode, detail: unknown): string {
+  return JSON.stringify(
+    {
+      node: { id: node.id, source: node.source, state: node.state, label: node.label },
+      timeline: normalizedTimeline(node, detail),
+      raw: detail ?? node.raw ?? null,
+    },
+    null,
+    2
+  );
+}
 
 type Translate = ReturnType<typeof useTranslations>;
 
@@ -72,18 +95,30 @@ function Timeline({ node, detail }: { node: OrchNode; detail: unknown }) {
   );
 }
 
-/** Header row: status dot, label/source/state, close button. */
+/** Header row: status dot, label/source/state, copy-trace + close buttons. */
 function DrawerHeader({
   node,
+  detail,
   state,
   t,
   onClose,
+  onToast,
 }: {
   node: OrchNode;
+  detail: unknown;
   state: OrchState;
   t: Translate;
   onClose: () => void;
+  onToast: (text: string) => void;
 }) {
+  const copyTrace = async () => {
+    try {
+      await navigator.clipboard.writeText(buildTraceJson(node, detail));
+      onToast(t("actionDone"));
+    } catch {
+      onToast(t("actionFailed", { error: "clipboard" }));
+    }
+  };
   return (
     <div className="flex items-center gap-2 mb-4">
       <StatusDot
@@ -97,10 +132,75 @@ function DrawerHeader({
           {node.source} · {t(STATE_KEY[state])}
         </div>
       </div>
-      <button className="ml-auto text-muted" onClick={onClose} aria-label="close">
+      <button className="ml-auto text-muted" onClick={copyTrace} aria-label={t("copyTrace")}>
+        ⧉
+      </button>
+      <button className="text-muted" onClick={onClose} aria-label={t("drawerClose")}>
         ✕
       </button>
     </div>
+  );
+}
+
+/**
+ * Narrows the loaded detail payload to the typed shape of the node's source — the
+ * non-matching one is always `null`, so each section can read its own shape safely.
+ */
+function narrowDetail(
+  node: OrchNode,
+  detail: unknown
+): { ca: CloudAgentTask | null; a2a: A2ATask | null } {
+  return {
+    ca: node.source === "cloud-agent" ? (detail as CloudAgentTask | null) : null,
+    a2a: node.source === "a2a" ? (detail as A2ATask | null) : null,
+  };
+}
+
+/** Objective section: the agent prompt / first A2A message, falling back to the node labels. */
+function DrawerObjective({
+  node,
+  ca,
+  a2a,
+  t,
+}: {
+  node: OrchNode;
+  ca: CloudAgentTask | null;
+  a2a: A2ATask | null;
+  t: Translate;
+}) {
+  return (
+    <Section title={t("drawerObjective")}>
+      <p className="text-xs break-words">
+        {ca?.prompt ?? a2a?.input?.messages[0]?.content ?? node.sublabel ?? node.label}
+      </p>
+    </Section>
+  );
+}
+
+/** Transient banners above the sections: toast, load/action error, loading placeholder. */
+function DrawerBanners({
+  toast,
+  error,
+  errorKind,
+  isLoading,
+  t,
+}: {
+  toast: string | null;
+  error: string | null;
+  errorKind: DrawerError["kind"] | null;
+  isLoading: boolean;
+  t: Translate;
+}) {
+  return (
+    <>
+      {toast && <div className="text-xs text-success mb-3">{toast}</div>}
+      {error && (
+        <div className="text-xs text-error mb-3">
+          {t(errorKind === "detail" ? "detailFailed" : "actionFailed", { error })}
+        </div>
+      )}
+      {isLoading && <div className="text-xs text-muted mb-3">…</div>}
+    </>
   );
 }
 
@@ -160,37 +260,46 @@ function DrawerResult({
 function DrawerActions({
   canApprove,
   canCancel,
+  busy,
   approve,
   cancel,
   onActionDone,
+  onToast,
   t,
 }: {
   canApprove: boolean;
   canCancel: boolean;
+  busy: boolean;
   approve: () => Promise<boolean>;
   cancel: () => Promise<boolean>;
   onActionDone: () => void;
+  onToast: (text: string) => void;
   t: Translate;
 }) {
   if (!canApprove && !canCancel) return null;
   const run = async (fn: () => Promise<boolean>) => {
-    if (await fn()) onActionDone();
+    if (await fn()) {
+      onActionDone();
+      onToast(t("actionDone"));
+    }
   };
   return (
     <Section title={t("drawerActions")}>
       <div className="flex gap-2">
         {canApprove && (
           <button
-            className="text-xs rounded border border-success px-2 py-1"
+            className="text-xs rounded border border-success px-2 py-1 disabled:opacity-50"
             onClick={() => run(approve)}
+            disabled={busy}
           >
             {t("actionApprove")}
           </button>
         )}
         {canCancel && (
           <button
-            className="text-xs rounded border border-error px-2 py-1"
+            className="text-xs rounded border border-error px-2 py-1 disabled:opacity-50"
             onClick={() => run(cancel)}
+            disabled={busy}
           >
             {t("actionCancel")}
           </button>
@@ -200,14 +309,42 @@ function DrawerActions({
   );
 }
 
-/** Closes the drawer on Escape while `node` is set. */
+/** Closes the drawer on Escape while `node` is set. Rebinds by id, not by object
+ * identity, so a fresh `node` reference for the same task (e.g. a refetch) does not
+ * tear down and re-add the listener. */
 function useCloseOnEscape(node: OrchNode | null, onClose: () => void) {
+  const nodeId = node?.id ?? null;
   useEffect(() => {
-    if (!node) return;
+    if (!nodeId) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [node, onClose]);
+  }, [nodeId, onClose]);
+}
+
+/**
+ * Local, self-clearing toast state. `showToast` starts the timer synchronously in the
+ * same handler that sets the message (button onClick / async action callback) — never
+ * inside an effect body — so the only thing the unmount effect does is clear a pending
+ * timer, with no setState call of its own (keeps `react-hooks/set-state-in-effect` clean).
+ */
+function useDrawerToast() {
+  const [toast, setToast] = useState<string | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = (text: string) => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setToast(text);
+    timerRef.current = setTimeout(() => setToast(null), TOAST_MS);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  return { toast, showToast };
 }
 
 export function OrchestrationDrawer({
@@ -220,14 +357,14 @@ export function OrchestrationDrawer({
   onActionDone: () => void;
 }) {
   const t = useTranslations("orchestration");
-  const { detail, isLoading, error, canApprove, canCancel, approve, cancel } =
+  const { detail, isLoading, busy, error, errorKind, canApprove, canCancel, approve, cancel } =
     useDrawerDetail(node);
   useCloseOnEscape(node, onClose);
+  const { toast, showToast } = useDrawerToast();
 
   if (!node) return null;
   const state = node.state ?? "queued";
-  const ca = node.source === "cloud-agent" ? (detail as CloudAgentTask | null) : null;
-  const a2a = node.source === "a2a" ? (detail as A2ATask | null) : null;
+  const { ca, a2a } = narrowDetail(node, detail);
 
   return (
     <>
@@ -237,16 +374,24 @@ export function OrchestrationDrawer({
         role="dialog"
         aria-label={node.label}
       >
-        <DrawerHeader node={node} state={state} t={t} onClose={onClose} />
+        <DrawerHeader
+          node={node}
+          detail={detail}
+          state={state}
+          t={t}
+          onClose={onClose}
+          onToast={showToast}
+        />
 
-        {error && <div className="text-xs text-error mb-3">{t("actionFailed", { error })}</div>}
-        {isLoading && <div className="text-xs text-muted mb-3">…</div>}
+        <DrawerBanners
+          toast={toast}
+          error={error}
+          errorKind={errorKind}
+          isLoading={isLoading}
+          t={t}
+        />
 
-        <Section title={t("drawerObjective")}>
-          <p className="text-xs break-words">
-            {ca?.prompt ?? a2a?.input?.messages[0]?.content ?? node.sublabel ?? node.label}
-          </p>
-        </Section>
+        <DrawerObjective node={node} ca={ca} a2a={a2a} t={t} />
         <Section title={t("drawerTimeline")}>
           <Timeline node={node} detail={detail} />
         </Section>
@@ -255,9 +400,11 @@ export function OrchestrationDrawer({
         <DrawerActions
           canApprove={canApprove}
           canCancel={canCancel}
+          busy={busy}
           approve={approve}
           cancel={cancel}
           onActionDone={onActionDone}
+          onToast={showToast}
           t={t}
         />
       </aside>

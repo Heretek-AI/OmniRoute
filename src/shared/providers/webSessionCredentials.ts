@@ -334,6 +334,46 @@ export const WEB_SESSION_CREDENTIAL_REQUIREMENTS = {
     acceptsFullCookieHeader: true,
     storageKeys: ["cookie", "__Secure-better-auth.session_token"],
   },
+  maxai: {
+    kind: "token",
+    credentialName: "MaxAI access token (Bearer) + device id",
+    placeholder:
+      "Use browser sign-in — OmniRoute mints the MaxAI access token, device id, and user id for you",
+    acceptsFullCookieHeader: false,
+    storageKeys: [
+      "accessToken",
+      "access_token",
+      "maxaiAccessToken",
+      "deviceId",
+      "maxaiDeviceId",
+      "userId",
+      "maxaiUserId",
+    ],
+  },
+  uc: {
+    // UC (uncensored.com) persona: auth is the durable Clerk `__client` cookie
+    // (a JWT with no exp) plus the session id + user id, all stored in
+    // providerSpecificData. The executor mints a short-lived `__session` JWT per
+    // connect from `__client`; it never reads `apiKey`. Storage keys mirror the
+    // aliases resolveUcCredential() accepts (ucClientCookie/clientCookie/__client,
+    // ucSid/sid, ucUid/uid, ucCookies/cookies).
+    kind: "cookie",
+    credentialName: "Clerk __client cookie + session id + user id",
+    placeholder: "__client=...; then set session id (sid) and user id (uid)",
+    acceptsFullCookieHeader: true,
+    storageKeys: [
+      "cookie",
+      "cookies",
+      "ucCookies",
+      "ucClientCookie",
+      "clientCookie",
+      "__client",
+      "ucSid",
+      "sid",
+      "ucUid",
+      "uid",
+    ],
+  },
 } satisfies Record<string, WebSessionCredentialRequirement> &
   Record<keyof typeof WEB_COOKIE_PROVIDERS, WebSessionCredentialRequirement>;
 

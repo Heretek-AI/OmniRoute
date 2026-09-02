@@ -61,6 +61,7 @@ import { getQoderUsage, parseQoderUserStatusUsage } from "./usage/qoder.ts";
 export { parseQoderUserStatusUsage } from "./usage/qoder.ts";
 import { getOpencodeUsage } from "./usage/opencode.ts";
 import { getDeepseekUsage } from "./usage/deepseek.ts";
+import { getDevinCliUsage } from "./usage/devinCli.ts";
 import { getBailianCodingPlanUsage } from "./usage/bailian.ts";
 import { getVertexUsage } from "./usage/vertex.ts";
 import { getXiaomiMimoUsage } from "./usage/xiaomi-mimo.ts";
@@ -208,6 +209,9 @@ export async function getUsageForProvider(
       return await getAgentrouterUsage(id, connection);
     case "kilocode":
       return await getKilocodeUsage(id, connection);
+    case "devin-cli":
+      // Devin CLI tokens live in `accessToken` (oauth import) or `apiKey`.
+      return await getDevinCliUsage(apiKey || accessToken);
     default:
       return { message: `Usage API not implemented for ${provider}` };
   }
