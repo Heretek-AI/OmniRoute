@@ -20,8 +20,19 @@ globalThis.fetch = async () => {
 
 const core = await import("../../src/lib/db/core.ts");
 const { __test__ } = await import("../../open-sse/executors/zed-hosted.ts");
+const { FORMATS } = await import("../../open-sse/translator/formats.ts");
+const { assembleStreamingPipeline } =
+  await import("../../open-sse/handlers/chatCore/streamingPipeline.ts");
+const { createPassthroughStreamWithLogger } = await import("../../open-sse/utils/stream.ts");
+const { createStreamFailureFinalizers } =
+  await import("../../open-sse/utils/streamFailureFinalization.ts");
+const { createStreamController } = await import("../../open-sse/utils/streamHandler.ts");
 const { ensureStreamReadiness } = await import("../../open-sse/utils/streamReadiness.ts");
 const { wrapZedCompletionStream } = __test__;
+
+type StreamCompletionEvent = Parameters<
+  Parameters<typeof createStreamFailureFinalizers>[0]["onStreamComplete"]
+>[0];
 
 const RAW_FAILURE = "Bearer TOP_SECRET /srv/omniroute/zed-handler.ts:42 api_key=zed-secret";
 
@@ -38,15 +49,26 @@ function nestedFailedStatusLine(): string {
   });
 }
 
-function wrapNdjson(lines: unknown[]): Response {
+function wrapOpenNdjson(lines: unknown[]): Response {
+  const encoder = new TextEncoder();
   const body = lines
     .map((line) => (typeof line === "string" ? line : JSON.stringify(line)))
     .join("\n");
-  const response = new Response(`${body}\n`, {
-    status: 200,
-    headers: { "Content-Type": "application/x-ndjson" },
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(`${body}\n`));
+      // Keep the upstream open: status.failed must terminate the wrapped stream itself.
+    },
+    cancel() {},
   });
-  return wrapZedCompletionStream(response, "x_ai", "grok-test");
+  return wrapZedCompletionStream(
+    new Response(stream, {
+      status: 200,
+      headers: { "Content-Type": "application/x-ndjson" },
+    }),
+    "x_ai",
+    "grok-test"
+  );
 }
 
 function wrapOpenFailedNdjson(): Response {
@@ -67,6 +89,48 @@ function wrapOpenFailedNdjson(): Response {
     "x_ai",
     "grok-test"
   );
+}
+
+function wrapStalledNdjson(onCancel: () => void): Response {
+  const body = new ReadableStream<Uint8Array>({
+    cancel() {
+      onCancel();
+      return new Promise<void>(() => {});
+    },
+  });
+  return wrapZedCompletionStream(
+    new Response(body, {
+      status: 200,
+      headers: { "Content-Type": "application/x-ndjson" },
+    }),
+    "x_ai",
+    "grok-test"
+  );
+}
+
+async function resolvesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`operation exceeded ${timeoutMs}ms`)),
+          timeoutMs
+        );
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  assert.equal(predicate(), true, `condition was not met within ${timeoutMs}ms`);
 }
 
 function parseSsePayloads(text: string): Array<Record<string, unknown>> {
@@ -115,7 +179,14 @@ test("zed-hosted pre-content status.failed becomes a sanitized 502 readiness fai
   assert.equal(networkCalls, 0);
 });
 
-test("zed-hosted partial output ends with a safe structured error, not a normal stop", async () => {
+test("zed-hosted partial failure reaches stream finalization and persistence as 502", async () => {
+  const roleChunk = {
+    event: {
+      id: "chatcmpl-zed-partial",
+      object: "chat.completion.chunk",
+      choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+    },
+  };
   const contentChunk = {
     event: {
       id: "chatcmpl-zed-partial",
@@ -124,7 +195,12 @@ test("zed-hosted partial output ends with a safe structured error, not a normal 
     },
   };
   const readiness = await ensureStreamReadiness(
-    wrapNdjson([contentChunk, nestedFailedStatusLine(), { event: { ignored: "after failure" } }]),
+    wrapOpenNdjson([
+      roleChunk,
+      contentChunk,
+      nestedFailedStatusLine(),
+      { event: { ignored: "after failure" } },
+    ]),
     {
       timeoutMs: 100,
       provider: "zed-hosted",
@@ -133,19 +209,109 @@ test("zed-hosted partial output ends with a safe structured error, not a normal 
   );
 
   assert.equal(readiness.ok, true, "partial model output must remain deliverable");
-  const text = await readiness.response.text();
+  const completionEvents: StreamCompletionEvent[] = [];
+  const persistedFailures: Array<{ status: number; code?: string }> = [];
+  const streamFailures: Array<{ status: number; message: string; code?: string; type?: string }> =
+    [];
+  const pipelineErrors: Array<{ message: string; statusCode: number }> = [];
+  let streamCompletionRecorded = false;
+  let failureCompletionRecorded = false;
+
+  const recordCompletion = (payload: StreamCompletionEvent): void => {
+    if (streamCompletionRecorded) return;
+    streamCompletionRecorded = true;
+    if (payload.status !== 200) failureCompletionRecorded = true;
+    completionEvents.push(payload);
+  };
+  const finalizers = createStreamFailureFinalizers({
+    isFailureCompletionRecorded: () => failureCompletionRecorded,
+    isStreamCompletionRecorded: () => streamCompletionRecorded,
+    onStreamComplete: recordCompletion,
+    persistFailureUsage: (status, code) => persistedFailures.push({ status, code }),
+    onStreamFailure: (failure) => streamFailures.push(failure),
+  });
+  const streamController = createStreamController({
+    onError: (event) => {
+      pipelineErrors.push({ message: event.message, statusCode: event.statusCode });
+      return finalizers.onPipelineStreamError(event);
+    },
+    provider: "zed-hosted",
+    model: "grok-test",
+    connectionId: "zed-test-connection",
+    clientResponseFormat: FORMATS.OPENAI,
+  });
+  const transformStream = createPassthroughStreamWithLogger(
+    "zed-hosted",
+    null,
+    null,
+    "grok-test",
+    "zed-test-connection",
+    { messages: [{ role: "user", content: "test" }] },
+    recordCompletion,
+    null,
+    finalizers.handleStreamFailure,
+    FORMATS.OPENAI
+  );
+  const responseHeaders: Record<string, string> = {};
+  const finalStream = assembleStreamingPipeline({
+    providerResponse: readiness.response,
+    transformStream,
+    streamController,
+    createPiiTransform: null,
+    clientRawRequestHeaders: null,
+    clientResponseFormat: FORMATS.OPENAI,
+    echoModel: null,
+    responseHeaders,
+  });
+  const text = await new Response(finalStream, { headers: responseHeaders }).text();
   const payloads = parseSsePayloads(text);
   const errorPayload = payloads.find((payload) => "error" in payload) as
     { error: { message: string; type: string; code: string } } | undefined;
 
   assert.match(text, /partial answer/);
-  assert.ok(errorPayload, "the terminal frame must use the canonical error envelope");
-  assert.equal(errorPayload.error.type, "upstream_error");
-  assert.equal(errorPayload.error.code, "ZED_STREAM_FAILED");
-  assert.match(errorPayload.error.message, /Zed stream failed/i);
-  assert.ok(errorPayload.error.message.length <= 531, "provider diagnostics must stay bounded");
-  assert.doesNotMatch(text, /\[Zed error\]|"finish_reason":"stop"|data: \[DONE\]/);
+  assert.ok(errorPayload, "the stream handler must emit its format-safe terminal error");
+  assert.equal(errorPayload.error.type, "server_error");
+  assert.equal(errorPayload.error.code, "server_error");
+  assert.equal(errorPayload.error.message, "Zed upstream stream failed");
+  assert.match(text, /"finish_reason":"error"/);
+  assert.doesNotMatch(text, /\[Zed error\]|"finish_reason":"stop"|response\.failed/);
   assert.doesNotMatch(text, /"ignored":"after failure"/);
   assertNoSensitiveFailureText(text);
+
+  assert.equal(completionEvents.length, 1, "the failure must finalize exactly once");
+  assert.equal(completionEvents[0].status, 502);
+  assert.equal(completionEvents[0].error, "Zed upstream stream failed");
+  assert.equal(completionEvents[0].errorCode, "stream_pipeline_error");
+  assert.deepEqual(persistedFailures, [{ status: 502, code: "stream_pipeline_error" }]);
+  assert.deepEqual(streamFailures, [
+    {
+      status: 502,
+      message: "Zed upstream stream failed",
+      code: "stream_pipeline_error",
+      type: "stream_error",
+    },
+  ]);
+  assert.deepEqual(pipelineErrors, [{ message: "Zed upstream stream failed", statusCode: 502 }]);
+  assertNoSensitiveFailureText(JSON.stringify(completionEvents));
+  assert.equal(networkCalls, 0);
+});
+
+test("zed-hosted client cancellation does not await a stalled upstream cancel hook", async () => {
+  let upstreamCancelCalls = 0;
+  const response = wrapStalledNdjson(() => {
+    upstreamCancelCalls += 1;
+  });
+  assert.ok(response.body);
+
+  const reader = response.body.getReader();
+  const pendingRead = reader.read();
+  await resolvesWithin(reader.cancel("client disconnected"), 100);
+  const readResult = await pendingRead;
+  assert.equal(readResult.done, true);
+  await waitFor(() => upstreamCancelCalls === 1, 100);
+
+  await resolvesWithin(reader.cancel("duplicate cancel"), 100);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(upstreamCancelCalls, 1, "the upstream cancel hook must be requested exactly once");
   assert.equal(networkCalls, 0);
 });
