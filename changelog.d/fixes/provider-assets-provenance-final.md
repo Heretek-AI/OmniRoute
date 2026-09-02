@@ -1,1 +1,1 @@
-Render Nimble Search with the generic provider icon and serve Opper's proven logo locally.
+- Render Nimble Search with the generic provider icon and serve Opper's proven logo locally.
