@@ -16,35 +16,34 @@
 
 import fs from "fs";
 import path from "path";
-import { createHash } from "crypto";
 import { fileURLToPath } from "url";
 import type { SqliteAdapter } from "./adapters/types";
-import { tryOpenSync } from "./adapters/driverFactory";
 import { DEFAULT_DATABASE_SETTINGS } from "@/types/databaseSettings";
 import { isAutomatedTestProcess } from "@/shared/utils/testProcess";
 import {
-  RENAMED_MIGRATION_COMPATIBILITY,
   LEGACY_VERSION_SLOT_MIGRATIONS,
-  SUPERSEDED_DUPLICATE_MIGRATIONS,
-  PHYSICAL_SCHEMA_SENTINELS,
-  INITIAL_SCHEMA_SENTINELS,
   OPTIONAL_FTS5_MIGRATION_VERSIONS,
+  RENAMED_MIGRATION_COMPATIBILITY,
+  SUPERSEDED_DUPLICATE_MIGRATIONS,
 } from "./migrationRunner/constants";
 import { getExtraMigrationFiles } from "./migrationRunner/extraDirs";
-
-const isNodeTestRunnerChild = typeof process.env.NODE_TEST_CONTEXT === "string";
-
-const console = {
-  log: (...args: unknown[]) => {
-    if (!isNodeTestRunnerChild) globalThis.console.log(...args);
-  },
-  warn: (...args: unknown[]) => {
-    if (!isNodeTestRunnerChild) globalThis.console.warn(...args);
-  },
-  error: (...args: unknown[]) => {
-    globalThis.console.error(...args);
-  },
-};
+import { migrationConsole as console } from "./migrationRunner/logger";
+import {
+  createPreMigrationBackup,
+  hashFileSync,
+  type PreMigrationBackupReceipt,
+} from "./migrationRunner/preMigrationBackup";
+import {
+  detectNameMismatches,
+  getPlausiblePendingCount,
+  hasColumn,
+  hasLedgerRepairCandidates,
+  hasPhysicalTable,
+  hasTable,
+  inferPhysicalSchemaBaseline,
+  reconcileRenumberedMigrations,
+  rehomeLegacyVersionSlotMigrations,
+} from "./migrationRunner/schemaState";
 
 /**
  * Resolve the migrations directory path safely across platforms.
@@ -329,39 +328,21 @@ function getAppliedRecords(db: SqliteAdapter): Array<{ version: string; name: st
   }>;
 }
 
-function hasTable(db: SqliteAdapter, tableName: string): boolean {
-  const row = db
-    .prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?")
-    .get(tableName) as { name?: string } | undefined;
-  return Boolean(row?.name);
-}
-
-function hasPhysicalTable(db: SqliteAdapter, tableName: string): boolean {
-  const row = db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .get(tableName) as { name?: string } | undefined;
-  return Boolean(row?.name);
-}
-
-function hasColumn(db: SqliteAdapter, tableName: string, columnName: string): boolean {
-  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>;
-  return columns.some((column) => column.name === columnName);
-}
-
 /**
  * Reopen a narrowly selected migration when the table it creates is physically absent.
  *
- * Historical databases can carry `074_discovery_results` in the ledger without the table
- * itself (for example after a version-slot collision or an incomplete manual recovery).
- * Later cleanup migrations reference that table. Treating the marker as authoritative makes
- * the first of those migrations fail forever. A same-named view does not count as the table;
- * replaying 074 then fails closed instead of silently advancing to dependent cleanup SQL.
+ * Historical databases can carry `074_discovery_results` or the rehomed
+ * `081_inspector_custom_hosts` in the ledger without the table itself (for example after a
+ * version-slot collision or an incomplete manual recovery). Treating either marker as
+ * authoritative leaves an incomplete schema. A same-named view does not count as the table;
+ * replaying the owning migration fails closed instead of silently advancing.
  *
  * This intentionally detects table absence only. It is not a general schema-healing layer:
  * column/rebuild migrations continue to use targeted idempotency checks elsewhere.
  */
 const REQUIRED_PHYSICAL_MIGRATIONS = [
   { version: "074", name: "discovery_results", tableName: "discovery_results" },
+  { version: "081", name: "inspector_custom_hosts", tableName: "inspector_custom_hosts" },
 ] as const;
 
 function validateRequiredPhysicalMigrationProvenance(
@@ -737,413 +718,6 @@ function applyCompressionCombosMigration(db: SqliteAdapter, migrationPath: strin
   `);
 }
 
-function inferPhysicalSchemaBaseline(db: SqliteAdapter): {
-  version: string;
-  description: string;
-} | null {
-  for (const sentinel of PHYSICAL_SCHEMA_SENTINELS) {
-    if (hasTable(db, sentinel.tableName)) {
-      return {
-        version: sentinel.version,
-        description: sentinel.description,
-      };
-    }
-  }
-
-  const hasInitialSchema = INITIAL_SCHEMA_SENTINELS.every((tableName) => hasTable(db, tableName));
-  if (hasInitialSchema) {
-    return {
-      version: "001",
-      description: "initial schema tables",
-    };
-  }
-
-  return null;
-}
-
-function getPlausiblePendingCount(
-  files: Array<{ version: string; name: string; path: string }>,
-  baselineVersion: string
-): number {
-  const baseline = Number.parseInt(baselineVersion, 10);
-  return files.filter((file) => Number.parseInt(file.version, 10) > baseline).length;
-}
-
-/**
- * Detect migration name mismatches — when a migration version number
- * has been reused/renumbered with a different name. This is a strong signal
- * that the migration tracking is corrupted or migrations were renumbered.
- */
-function detectNameMismatches(
-  appliedRecords: Array<{ version: string; name: string }>,
-  files: Array<{ version: string; name: string; path: string }>
-): Array<{ version: string; appliedName: string; diskName: string }> {
-  const appliedByName = new Map(appliedRecords.map((r) => [r.version, r.name]));
-  const mismatches: Array<{ version: string; appliedName: string; diskName: string }> = [];
-
-  for (const file of files) {
-    const appliedName = appliedByName.get(file.version);
-    if (appliedName && appliedName !== file.name) {
-      mismatches.push({
-        version: file.version,
-        appliedName,
-        diskName: file.name,
-      });
-    }
-  }
-
-  return mismatches;
-}
-
-function reconcileRenumberedMigrations(
-  db: SqliteAdapter,
-  files: Array<{ version: string; name: string; path: string }>
-): boolean {
-  let repaired = false;
-
-  for (const compatibility of RENAMED_MIGRATION_COMPATIBILITY) {
-    const hasTargetFile = files.some(
-      (file) => file.version === compatibility.toVersion && file.name === compatibility.toName
-    );
-    const hasSourceFile = files.some(
-      (file) => file.version === compatibility.fromVersion && file.name !== compatibility.fromName
-    );
-
-    if (!hasTargetFile || !hasSourceFile) {
-      continue;
-    }
-
-    const legacyRow = db
-      .prepare("SELECT version, name FROM _omniroute_migrations WHERE version = ? AND name = ?")
-      .get(compatibility.fromVersion, compatibility.fromName) as
-      { version: string; name: string } | undefined;
-    if (!legacyRow) {
-      continue;
-    }
-
-    const targetRow = db
-      .prepare("SELECT version, name FROM _omniroute_migrations WHERE version = ?")
-      .get(compatibility.toVersion) as { version: string; name: string } | undefined;
-
-    const isSameSlotReplacement = compatibility.fromVersion === compatibility.toVersion;
-    if (targetRow && !isSameSlotReplacement && targetRow.name !== compatibility.toName) {
-      throw new Error(
-        `[Migration] Cannot reconcile ${compatibility.fromVersion}_${compatibility.fromName}: ` +
-          `target version ${compatibility.toVersion} is occupied by unknown migration ` +
-          `"${targetRow.name}" (expected "${compatibility.toName}").`
-      );
-    }
-
-    const applyRepair = db.transaction(() => {
-      if (targetRow) {
-        db.prepare("DELETE FROM _omniroute_migrations WHERE version = ? AND name = ?").run(
-          compatibility.fromVersion,
-          compatibility.fromName
-        );
-      } else {
-        db.prepare(
-          "UPDATE _omniroute_migrations SET version = ?, name = ? WHERE version = ? AND name = ?"
-        ).run(
-          compatibility.toVersion,
-          compatibility.toName,
-          compatibility.fromVersion,
-          compatibility.fromName
-        );
-      }
-    });
-
-    applyRepair();
-    repaired = true;
-    console.warn(
-      `[Migration] Reconciled renamed migration ${compatibility.fromVersion}_${compatibility.fromName} ` +
-        `to ${compatibility.toVersion}_${compatibility.toName} to preserve pending migrations.`
-    );
-
-    // After the compat rewrite, verify the old version slot is now free.
-    // A residual row (from a failed prior run, manual intervention, or edge-case
-    // UPDATE conflict) at the old version would shadow a NEW migration file
-    // placed at that version number — e.g. 028_create_files_and_batches.sql
-    // would be skipped because getAppliedVersions() still sees version "028".
-    const residualRow = db
-      .prepare("SELECT version, name FROM _omniroute_migrations WHERE version = ?")
-      .get(compatibility.fromVersion) as { version: string; name: string } | undefined;
-    if (residualRow) {
-      console.warn(
-        `[Migration] ⚠️  Residual row at version ${compatibility.fromVersion} ` +
-          `(name: "${residualRow.name}") still present after compat rewrite — ` +
-          `removing to unblock new migration at this version slot.`
-      );
-      db.prepare("DELETE FROM _omniroute_migrations WHERE version = ?").run(
-        compatibility.fromVersion
-      );
-    }
-  }
-
-  return repaired;
-}
-
-function rehomeLegacyVersionSlotMigrations(
-  db: SqliteAdapter,
-  files: Array<{ version: string; name: string; path: string }>
-): boolean {
-  let repaired = false;
-  const diskNamesByVersion = new Map(files.map((file) => [file.version, file.name]));
-
-  for (const legacy of LEGACY_VERSION_SLOT_MIGRATIONS) {
-    const diskName = diskNamesByVersion.get(legacy.version);
-    if (!diskName || diskName === legacy.name) {
-      continue;
-    }
-
-    const legacyRow = db
-      .prepare("SELECT version, name FROM _omniroute_migrations WHERE version = ? AND name = ?")
-      .get(legacy.version, legacy.name) as { version: string; name: string } | undefined;
-    if (!legacyRow) {
-      continue;
-    }
-
-    const legacyVersion = `legacy-${legacy.version}-${legacy.name}`;
-    const applyRepair = db.transaction(() => {
-      const existingLegacyRow = db
-        .prepare("SELECT version FROM _omniroute_migrations WHERE version = ?")
-        .get(legacyVersion) as { version: string } | undefined;
-
-      if (existingLegacyRow) {
-        db.prepare("DELETE FROM _omniroute_migrations WHERE version = ? AND name = ?").run(
-          legacy.version,
-          legacy.name
-        );
-        return;
-      }
-
-      db.prepare("UPDATE _omniroute_migrations SET version = ? WHERE version = ? AND name = ?").run(
-        legacyVersion,
-        legacy.version,
-        legacy.name
-      );
-    });
-
-    applyRepair();
-    repaired = true;
-    console.warn(
-      `[Migration] Rehomed legacy migration ${legacy.version}_${legacy.name} ` +
-        `to ${legacyVersion} so current ${legacy.version}_${diskName} can apply.`
-    );
-  }
-
-  return repaired;
-}
-
-function hasLedgerRepairCandidates(
-  db: SqliteAdapter,
-  files: Array<{ version: string; name: string; path: string }>
-): boolean {
-  const diskNamesByVersion = new Map(files.map((file) => [file.version, file.name]));
-  for (const legacy of LEGACY_VERSION_SLOT_MIGRATIONS) {
-    const diskName = diskNamesByVersion.get(legacy.version);
-    if (!diskName || diskName === legacy.name) continue;
-    const row = db
-      .prepare("SELECT 1 FROM _omniroute_migrations WHERE version = ? AND name = ?")
-      .get(legacy.version, legacy.name);
-    if (row) return true;
-  }
-
-  for (const compatibility of RENAMED_MIGRATION_COMPATIBILITY) {
-    const hasTargetFile = files.some(
-      (file) => file.version === compatibility.toVersion && file.name === compatibility.toName
-    );
-    const hasSourceFile = files.some(
-      (file) => file.version === compatibility.fromVersion && file.name !== compatibility.fromName
-    );
-    if (!hasTargetFile || !hasSourceFile) continue;
-    const row = db
-      .prepare("SELECT 1 FROM _omniroute_migrations WHERE version = ? AND name = ?")
-      .get(compatibility.fromVersion, compatibility.fromName);
-    if (row) return true;
-  }
-
-  return false;
-}
-
-function fsyncDirectoryEntry(directory: string): void {
-  let fd: number | null = null;
-  try {
-    fd = fs.openSync(directory, "r");
-    fs.fsyncSync(fd);
-  } catch (error: unknown) {
-    const code = (error as NodeJS.ErrnoException | null)?.code;
-    const windowsDirectoryHandleUnsupported =
-      process.platform === "win32" &&
-      (code === "EACCES" || code === "EPERM" || code === "EISDIR" || code === "EINVAL");
-    if (!windowsDirectoryHandleUnsupported) throw error;
-  } finally {
-    if (fd !== null) fs.closeSync(fd);
-  }
-}
-
-function hashFileSync(filePath: string): string {
-  const hash = createHash("sha256");
-  const fd = fs.openSync(filePath, "r");
-  const buffer = Buffer.allocUnsafe(1024 * 1024);
-  let position = 0;
-
-  try {
-    while (true) {
-      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, position);
-      if (bytesRead === 0) break;
-      hash.update(buffer.subarray(0, bytesRead));
-      position += bytesRead;
-    }
-  } finally {
-    fs.closeSync(fd);
-  }
-
-  return hash.digest("hex");
-}
-
-type PreMigrationBackupReceipt = {
-  path: string;
-  sha256: string;
-};
-
-function getReusablePreMigrationBackup(
-  candidatePath: string,
-  expectedSha256: string
-): PreMigrationBackupReceipt | null {
-  if (!fs.existsSync(candidatePath)) return null;
-
-  const before = fs.lstatSync(candidatePath);
-  if (!before.isFile() || hashFileSync(candidatePath) !== expectedSha256) {
-    throw new Error(
-      `[Migration] Content-addressed snapshot path exists with unexpected content: ${candidatePath}`
-    );
-  }
-  const after = fs.lstatSync(candidatePath);
-  if (
-    before.dev !== after.dev ||
-    before.ino !== after.ino ||
-    before.size !== after.size ||
-    before.mtimeMs !== after.mtimeMs
-  ) {
-    throw new Error(
-      `[Migration] Content-addressed snapshot changed while it was being validated: ${candidatePath}`
-    );
-  }
-
-  return { path: candidatePath, sha256: expectedSha256 };
-}
-
-function publishSnapshotWithoutOverwrite(tempPath: string, destination: string): void {
-  // link() publishes a complete same-filesystem image atomically and, unlike rename(),
-  // fails with EEXIST instead of overwriting a path created by another process. There is
-  // deliberately no copy/rename fallback: filesystems without this primitive fail closed
-  // instead of exposing a partial canonical `.sqlite` file after a crash.
-  fs.linkSync(tempPath, destination);
-  const publishedFd = fs.openSync(destination, "r+");
-  try {
-    // Flush through the published name as well as the already-fsynced temp handle.
-    // On Windows this maps to FlushFileBuffers and is the strongest file-level
-    // durability proof available when directory handles are unsupported by Node.
-    fs.fsyncSync(publishedFd);
-  } finally {
-    fs.closeSync(publishedFd);
-  }
-  fsyncDirectoryEntry(path.dirname(destination));
-}
-
-function fsyncReusableSnapshot(snapshotPath: string): void {
-  const fd = fs.openSync(snapshotPath, "r+");
-  try {
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
-type SqlJsSnapshotClone = {
-  run(sql: string): void;
-  export(): Uint8Array;
-  close(): void;
-};
-
-const SQLITE_HEADER_MIN_BYTES = 100;
-const SQLITE_HEADER_MAGIC = "SQLite format 3\0";
-const SQLITE_CHANGE_COUNTER_OFFSET = 24;
-const SQLITE_VERSION_VALID_FOR_OFFSET = 92;
-const SQLITE_STANDALONE_CHANGE_COUNTER = 1;
-
-function exportCanonicalSqlJsSnapshot(raw: { export: () => Uint8Array }): Buffer {
-  const RawDatabase = (
-    raw as unknown as { constructor: new (data: Uint8Array) => SqlJsSnapshotClone }
-  ).constructor;
-  let clone: SqlJsSnapshotClone | null = null;
-
-  try {
-    // A rolled-back sql.js SAVEPOINT can leave SQLite's physical change counter advanced
-    // even though every logical row/schema change was undone. Canonicalize only a detached
-    // clone: VACUUM removes rollback-only page artifacts without touching the live database.
-    clone = new RawDatabase(raw.export());
-    clone.run("VACUUM");
-    const canonical = Buffer.from(clone.export());
-
-    if (
-      canonical.length < SQLITE_HEADER_MIN_BYTES ||
-      canonical.subarray(0, SQLITE_HEADER_MAGIC.length).toString("binary") !== SQLITE_HEADER_MAGIC
-    ) {
-      throw new Error("sql.js export did not produce a valid SQLite file header");
-    }
-
-    // SQLite file-header offsets 24 and 92 are the change counter and
-    // version-valid-for number. VACUUM keeps the two equal, but seeds them from the
-    // source image, so an otherwise identical rolled-back retry still gets a different
-    // byte hash. A standalone snapshot has no open readers to invalidate; assigning the
-    // same stable value to both fields preserves a valid/restorable header while making
-    // the complete canonical image deterministic.
-    canonical.writeUInt32BE(SQLITE_STANDALONE_CHANGE_COUNTER, SQLITE_CHANGE_COUNTER_OFFSET);
-    canonical.writeUInt32BE(SQLITE_STANDALONE_CHANGE_COUNTER, SQLITE_VERSION_VALID_FOR_OFFSET);
-    return canonical;
-  } finally {
-    clone?.close();
-  }
-}
-
-function writeSqlJsSnapshot(raw: { export: () => Uint8Array }, tempPath: string): void {
-  let fd: number | null = null;
-
-  try {
-    fd = fs.openSync(tempPath, "wx");
-    fs.writeFileSync(fd, exportCanonicalSqlJsSnapshot(raw));
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
-    fd = null;
-  } catch (error: unknown) {
-    if (fd !== null) {
-      try {
-        fs.closeSync(fd);
-      } catch {
-        // The original snapshot error remains authoritative.
-      }
-    }
-    throw error;
-  }
-}
-
-function cleanupOwnedSnapshotTemp(tempDir: string | null, tempPath: string | null): void {
-  if (!tempDir || !fs.existsSync(tempDir)) return;
-
-  try {
-    // `tempDir` comes only from mkdtempSync below. Removing that exact owned directory
-    // lets Node retry Windows/AV EBUSY and EPERM failures without touching canonical backups.
-    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 });
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(
-      `[Migration] Failed to remove owned snapshot temp directory` +
-        `${tempPath ? ` (${tempPath})` : ""}: ${message}`
-    );
-  }
-}
-
 /**
  * Run a callback while holding SQLite's IMMEDIATE writer transaction.
  *
@@ -1172,113 +746,6 @@ function runImmediateTransaction<T>(db: SqliteAdapter, fn: () => T): T {
 }
 
 /**
- * Create a synchronous pre-migration snapshot.
- *
- * Native SQLite drivers use VACUUM INTO. sql.js has an in-memory VFS, so a host
- * path passed to VACUUM INTO is not writable; export its current database image
- * directly instead. The SHA-256 content address lives in the first portion of the
- * canonical `db_<snapshot-id>_<reason>.sqlite` shape, preserving reason parsing while
- * making unchanged retries an O(1) lookup even with tens of thousands of old backups.
- * Work happens inside an exclusively-created
- * temp directory, so failure cleanup has exact ownership. Publication uses an atomic,
- * no-overwrite hard link. If the filesystem cannot provide that primitive, the caller
- * fails closed instead of exposing a partial canonical `.sqlite` file. A content hash
- * reuses an identical prior snapshot, so repeated zero-progress startups retain one
- * restore point for that database state without ever deleting a published backup.
- */
-function createPreMigrationBackup(db: SqliteAdapter): PreMigrationBackupReceipt | null {
-  let backupPath: string | null = null;
-  let tempPath: string | null = null;
-  let tempDir: string | null = null;
-
-  try {
-    const sqliteFile = db.name;
-    if (!sqliteFile || sqliteFile === ":memory:") return null;
-
-    const backupDir = path.join(path.dirname(sqliteFile), "db_backups");
-    if (!fs.existsSync(backupDir)) {
-      fs.mkdirSync(backupDir, { recursive: true });
-      fsyncDirectoryEntry(path.dirname(backupDir));
-    }
-
-    tempDir = fs.mkdtempSync(path.join(backupDir, ".migration-snapshot-"));
-    tempPath = path.join(tempDir, "snapshot.sqlite");
-
-    if (db.driver === "sql.js") {
-      const raw = db.raw as { export?: () => Uint8Array } | null;
-      if (!raw || typeof raw.export !== "function") {
-        throw new Error("sql.js adapter does not expose database export()");
-      }
-      writeSqlJsSnapshot(raw as { export: () => Uint8Array }, tempPath);
-    } else {
-      const escapedTempPath = tempPath.replace(/'/g, "''");
-      const snapshotDb = tryOpenSync(sqliteFile, { readonly: true, fileMustExist: true });
-      if (!snapshotDb) {
-        throw new Error("no synchronous read-only SQLite driver is available for snapshotting");
-      }
-      try {
-        snapshotDb.exec(`VACUUM INTO '${escapedTempPath}'`);
-      } finally {
-        snapshotDb.close();
-      }
-      const fd = fs.openSync(tempPath, "r+");
-      try {
-        fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
-      }
-    }
-
-    const sha256 = hashFileSync(tempPath);
-    backupPath = path.join(backupDir, `db_state-${sha256}_pre-migration.sqlite`);
-    const reusable = getReusablePreMigrationBackup(backupPath, sha256);
-    if (reusable) {
-      fsyncReusableSnapshot(reusable.path);
-      fsyncDirectoryEntry(backupDir);
-      cleanupOwnedSnapshotTemp(tempDir, tempPath);
-      tempDir = null;
-      tempPath = null;
-      console.log(`[Migration] Reusing identical pre-migration backup: ${reusable.path}`);
-      return reusable;
-    }
-
-    try {
-      publishSnapshotWithoutOverwrite(tempPath, backupPath);
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException | null)?.code !== "EEXIST") throw error;
-      const racedReusable = getReusablePreMigrationBackup(backupPath, sha256);
-      if (!racedReusable) throw error;
-      fsyncReusableSnapshot(racedReusable.path);
-      fsyncDirectoryEntry(backupDir);
-      cleanupOwnedSnapshotTemp(tempDir, tempPath);
-      tempDir = null;
-      tempPath = null;
-      console.log(`[Migration] Reusing concurrently published backup: ${racedReusable.path}`);
-      return racedReusable;
-    }
-    cleanupOwnedSnapshotTemp(tempDir, tempPath);
-    tempDir = null;
-    tempPath = null;
-    console.log(`[Migration] Pre-migration backup created: ${backupPath}`);
-
-    return { path: backupPath, sha256 };
-  } catch (err: unknown) {
-    // Never unlink a canonical backup here: publication may have failed because another
-    // actor created it first. The exclusive temp directory is the only cleanup authority.
-    cleanupOwnedSnapshotTemp(tempDir, tempPath);
-    const message = err instanceof Error ? err.message : String(err);
-    console.warn(`[Migration] Failed to create pre-migration backup: ${message}`);
-    throw new Error(
-      `[Migration] Refusing to migrate an existing database without a durable snapshot. ` +
-        `Snapshot creation failed: ${message}. The DATA_DIR filesystem must support atomic ` +
-        `no-overwrite hard links, durable file synchronization, and directory synchronization ` +
-        `where the platform exposes it.`,
-      { cause: err instanceof Error ? err : undefined }
-    );
-  }
-}
-
-/**
  * Run all pending migrations in order.
  * Returns the number of migrations applied.
  *
@@ -1287,8 +754,16 @@ function createPreMigrationBackup(db: SqliteAdapter): PreMigrationBackupReceipt 
  * 2. Aborts if too many pending migrations on an existing DB (likely wipe)
  * 3. Creates automatic backup before running any migrations
  */
-export function runMigrations(db: SqliteAdapter, options?: { isNewDb?: boolean }): number {
+export function runMigrations(
+  db: SqliteAdapter,
+  options?: { isNewDb?: boolean; databaseExistedBeforeInitialization?: boolean }
+): number {
   const isNewDb = options?.isNewDb === true;
+  // `isNewDb` also covers a setup-created skeleton so it can bypass the mass-migration
+  // false positive. Snapshot eligibility must use the independent physical-file fact:
+  // that skeleton can already contain provider credentials and other operator state.
+  const databaseExistedBeforeInitialization =
+    options?.databaseExistedBeforeInitialization ?? !isNewDb;
   ensureMigrationsTable(db);
 
   const files = filterSupersededDuplicateMigrations(getMigrationFiles());
@@ -1341,17 +816,10 @@ export function runMigrations(db: SqliteAdapter, options?: { isNewDb?: boolean }
     db.driver === "sql.js" &&
     (preliminaryActionable.length > 0 || preliminaryHasRepairCandidates)
   ) {
-    const freshSeedOnly =
-      preliminaryApplied.size === 1 &&
-      preliminaryApplied.has("001") &&
-      inferPhysicalSchemaBaseline(db) === null &&
-      hasTable(db, "provider_connections");
     const needsSnapshot =
       (preliminaryActionable.length > 0 || preliminaryHasRepairCandidates) &&
       db.name !== ":memory:" &&
-      !isNewDb &&
-      !freshSeedOnly &&
-      preliminaryApplied.size > 0;
+      databaseExistedBeforeInitialization;
 
     if (needsSnapshot) {
       preMigrationBackup = createPreMigrationBackup(db);
@@ -1381,19 +849,10 @@ export function runMigrations(db: SqliteAdapter, options?: { isNewDb?: boolean }
       const preliminaryActionable = preliminaryPending.filter(
         (migration) => !isDeferredUnsupportedMigration(db, migration)
       );
-      const freshSeedBeforeRepair =
-        appliedBeforeRepair.size === 1 &&
-        appliedBeforeRepair.has("001") &&
-        inferPhysicalSchemaBaseline(db) === null &&
-        hasTable(db, "provider_connections");
       const mayWriteExistingDatabase =
         preliminaryActionable.length > 0 || hasLedgerRepairCandidates(db, files);
       const needsSnapshot =
-        mayWriteExistingDatabase &&
-        db.name !== ":memory:" &&
-        !isNewDb &&
-        !freshSeedBeforeRepair &&
-        hadAppliedBeforeRepair;
+        mayWriteExistingDatabase && db.name !== ":memory:" && databaseExistedBeforeInitialization;
 
       if (needsSnapshot && !preMigrationBackup) {
         if (db.driver === "sql.js") {
@@ -1435,9 +894,7 @@ export function runMigrations(db: SqliteAdapter, options?: { isNewDb?: boolean }
       const requiresDurableBackup =
         actionablePending.length > 0 &&
         db.name !== ":memory:" &&
-        !isNewDb &&
-        !isFreshSeedOnly &&
-        (applied.size > 0 || hadAppliedBeforeRepair);
+        databaseExistedBeforeInitialization;
 
       // Recompute under the same writer transaction as repairs and fail before any
       // ledger mutation can commit if the durable-snapshot requirement is not met.

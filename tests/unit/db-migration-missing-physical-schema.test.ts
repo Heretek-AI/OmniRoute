@@ -49,8 +49,8 @@ if (!isIsolatedChild) {
         0,
         `isolated migration regressions failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
       );
-      assert.match(result.stdout, /\btests 11\b/, "the isolated child must execute all subtests");
-      assert.match(result.stdout, /\bpass 11\b/, "the isolated child must pass all subtests");
+      assert.match(result.stdout, /\btests 13\b/, "the isolated child must execute all subtests");
+      assert.match(result.stdout, /\bpass 13\b/, "the isolated child must pass all subtests");
     } finally {
       fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       fs.rmSync(migrationsDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -228,6 +228,91 @@ if (!isIsolatedChild) {
       assert.deepEqual(db.prepare("SELECT host FROM inspector_custom_hosts").get(), {
         host: "api.example.test",
       });
+    } finally {
+      db.close();
+    }
+  });
+
+  test("runner rebuilds both collided tables when neither physical table survived", () => {
+    const db = new Database(":memory:");
+
+    try {
+      db.exec(`
+      CREATE TABLE _omniroute_migrations (
+        version TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO _omniroute_migrations (version, name)
+      VALUES ('074', 'inspector_custom_hosts');
+    `);
+
+      assert.equal(runMigrations(db as never), 4);
+      assert.ok(
+        db
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'discovery_results'"
+          )
+          .get(),
+        "the canonical 074 table must be restored"
+      );
+      assert.ok(
+        db
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'inspector_custom_hosts'"
+          )
+          .get(),
+        "the rehomed 081 marker must not hide a missing inspector table"
+      );
+      assert.deepEqual(
+        db.prepare("SELECT version, name FROM _omniroute_migrations ORDER BY version").all(),
+        [
+          { version: "074", name: "discovery_results" },
+          { version: "081", name: "inspector_custom_hosts" },
+          { version: "151", name: "windsurf_to_devin_desktop" },
+          { version: "152", name: "remove_puter_provider" },
+        ]
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  test("runner atomically replays 081 when its marker exists without the inspector table", () => {
+    const db = new Database(":memory:");
+
+    try {
+      db.exec(discoveryMigrationSql);
+      db.exec(`
+      CREATE TABLE _omniroute_migrations (
+        version TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO _omniroute_migrations (version, name)
+      VALUES ('074', 'discovery_results');
+      INSERT INTO _omniroute_migrations (version, name)
+      VALUES ('081', 'inspector_custom_hosts');
+    `);
+
+      assert.equal(runMigrations(db as never), 3);
+      assert.ok(
+        db
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'inspector_custom_hosts'"
+          )
+          .get(),
+        "a valid 081 marker must be replayed when its physical table is absent"
+      );
+      assert.deepEqual(
+        db.prepare("SELECT version, name FROM _omniroute_migrations ORDER BY version").all(),
+        [
+          { version: "074", name: "discovery_results" },
+          { version: "081", name: "inspector_custom_hosts" },
+          { version: "151", name: "windsurf_to_devin_desktop" },
+          { version: "152", name: "remove_puter_provider" },
+        ]
+      );
     } finally {
       db.close();
     }

@@ -77,6 +77,19 @@ function seedExistingDb(db: ReturnType<typeof createFileDb>): void {
   `);
 }
 
+function seedSetupSkeleton(db: ReturnType<typeof createFileDb>): void {
+  db.exec(`
+    CREATE TABLE provider_connections (id TEXT PRIMARY KEY);
+    CREATE TABLE _omniroute_migrations (
+      version TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT INTO provider_connections (id) VALUES ('setup-preserved-data');
+    INSERT INTO _omniroute_migrations (version, name) VALUES ('001', 'initial_schema');
+  `);
+}
+
 function makeTempDataDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-migration-snapshot-"));
   fs.mkdirSync(path.join(dir, "db_backups"), { recursive: true });
@@ -206,6 +219,59 @@ test(
       assert.deepEqual(
         db.prepare("SELECT version, name FROM _omniroute_migrations ORDER BY version").all(),
         [{ version: "001", name: "initial_schema" }]
+      );
+      assert.deepEqual(listCanonicalBackups(backupDir), []);
+      assert.deepEqual(listOwnedTempDirs(backupDir), []);
+    } finally {
+      fs.linkSync = originalLinkSync;
+      db.close();
+      fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }
+);
+
+test(
+  "a pre-existing setup skeleton requires a snapshot even when mass-migration safety treats it as fresh",
+  serial,
+  async () => {
+    const dataDir = makeTempDataDir();
+    const backupDir = path.join(dataDir, "db_backups");
+    const db = createFileDb(path.join(dataDir, "storage.sqlite"));
+    const originalLinkSync = fs.linkSync;
+
+    try {
+      seedSetupSkeleton(db);
+      const { runMigrations } = await importFresh("src/lib/db/migrationRunner.ts");
+      fs.linkSync = (() => {
+        throw Object.assign(new Error("hard links unsupported by this filesystem"), {
+          code: "ENOTSUP",
+        });
+      }) as typeof fs.linkSync;
+
+      assert.throws(
+        () =>
+          withMockedMigrationFs(
+            {
+              "001_initial_schema.sql": "SELECT 1;",
+              "002_ordinary_pending.sql": "CREATE TABLE must_not_apply (id INTEGER);",
+            },
+            () =>
+              runMigrations(db, {
+                isNewDb: true,
+                databaseExistedBeforeInitialization: true,
+              })
+          ),
+        /durable snapshot.*hard links unsupported.*hard links.*synchronization/is
+      );
+      assert.equal(
+        db.prepare("SELECT name FROM sqlite_master WHERE name = 'must_not_apply'").get(),
+        undefined,
+        "a setup-created persistent DB must not change when its safety snapshot cannot publish"
+      );
+      assert.deepEqual(
+        db.prepare("SELECT id FROM provider_connections").all(),
+        [{ id: "setup-preserved-data" }],
+        "the setup-created provider state must remain untouched"
       );
       assert.deepEqual(listCanonicalBackups(backupDir), []);
       assert.deepEqual(listOwnedTempDirs(backupDir), []);
