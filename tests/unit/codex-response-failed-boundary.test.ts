@@ -8,6 +8,37 @@ const FIXTURE = fileURLToPath(
   new URL("../fixtures/codex-response-failed-boundary.fixture.ts", import.meta.url)
 );
 
+const CHILD_RUNTIME_ENV_KEYS = [
+  "PATH",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "SystemRoot",
+  "ComSpec",
+  "PATHEXT",
+  "LANG",
+  "LC_ALL",
+  "TZ",
+] as const;
+
+function buildFixtureEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    NODE_ENV: "test",
+    APP_LOG_TO_FILE: "false",
+    API_KEY_SECRET: "codex-boundary-fixture-api-key-secret-20260902",
+    DISABLE_SQLITE_AUTO_BACKUP: "true",
+  };
+
+  for (const key of CHILD_RUNTIME_ENV_KEYS) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+
+  // A nested test runner must receive its own context instead of inheriting the parent's.
+  delete env.NODE_TEST_CONTEXT;
+  return env;
+}
+
 test("Codex public failure boundaries pass in an isolated process", () => {
   const result = spawnSync(
     process.execPath,
@@ -23,7 +54,7 @@ test("Codex public failure boundaries pass in an isolated process", () => {
     {
       cwd: REPO_ROOT,
       encoding: "utf8",
-      env: { ...process.env, DISABLE_SQLITE_AUTO_BACKUP: "true" },
+      env: buildFixtureEnv(),
       timeout: 60_000,
     }
   );
