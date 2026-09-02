@@ -16,8 +16,10 @@
 
 import fs from "fs";
 import path from "path";
+import { createHash } from "crypto";
 import { fileURLToPath } from "url";
 import type { SqliteAdapter } from "./adapters/types";
+import { tryOpenSync } from "./adapters/driverFactory";
 import { DEFAULT_DATABASE_SETTINGS } from "@/types/databaseSettings";
 import { isAutomatedTestProcess } from "@/shared/utils/testProcess";
 import {
@@ -29,15 +31,6 @@ import {
   OPTIONAL_FTS5_MIGRATION_VERSIONS,
 } from "./migrationRunner/constants";
 import { getExtraMigrationFiles } from "./migrationRunner/extraDirs";
-// Retention primitives live in their own `core`-free module: `core.ts` imports this file,
-// so importing `backup.ts` (which imports `core.ts`) here would close a dependency cycle.
-import {
-  MAX_DB_BACKUPS,
-  DEFAULT_DB_BACKUP_RETENTION_DAYS,
-  parsePositiveInt,
-  parseNonNegativeInt,
-  pruneBackupDirectory,
-} from "./backupRetention";
 
 const isNodeTestRunnerChild = typeof process.env.NODE_TEST_CONTEXT === "string";
 
@@ -343,9 +336,107 @@ function hasTable(db: SqliteAdapter, tableName: string): boolean {
   return Boolean(row?.name);
 }
 
+function hasPhysicalTable(db: SqliteAdapter, tableName: string): boolean {
+  const row = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(tableName) as { name?: string } | undefined;
+  return Boolean(row?.name);
+}
+
 function hasColumn(db: SqliteAdapter, tableName: string, columnName: string): boolean {
   const columns = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>;
   return columns.some((column) => column.name === columnName);
+}
+
+/**
+ * Reopen a narrowly selected migration when the table it creates is physically absent.
+ *
+ * Historical databases can carry `074_discovery_results` in the ledger without the table
+ * itself (for example after a version-slot collision or an incomplete manual recovery).
+ * Later cleanup migrations reference that table. Treating the marker as authoritative makes
+ * the first of those migrations fail forever. A same-named view does not count as the table;
+ * replaying 074 then fails closed instead of silently advancing to dependent cleanup SQL.
+ *
+ * This intentionally detects table absence only. It is not a general schema-healing layer:
+ * column/rebuild migrations continue to use targeted idempotency checks elsewhere.
+ */
+const REQUIRED_PHYSICAL_MIGRATIONS = [
+  { version: "074", name: "discovery_results", tableName: "discovery_results" },
+] as const;
+
+function validateRequiredPhysicalMigrationProvenance(
+  db: SqliteAdapter,
+  files: Array<{ version: string; name: string; path: string }>
+): void {
+  for (const required of REQUIRED_PHYSICAL_MIGRATIONS) {
+    if (hasPhysicalTable(db, required.tableName)) continue;
+
+    const migrationExists = files.some(
+      (file) => file.version === required.version && file.name === required.name
+    );
+    if (!migrationExists) continue;
+
+    const occupied = db
+      .prepare("SELECT version, name FROM _omniroute_migrations WHERE version = ?")
+      .get(required.version) as { version: string; name: string } | undefined;
+    if (!occupied || occupied.name === required.name) continue;
+
+    const knownRenumberedCollision = RENAMED_MIGRATION_COMPATIBILITY.some(
+      (compatibility) =>
+        compatibility.fromVersion === occupied.version &&
+        compatibility.fromName === occupied.name &&
+        files.some(
+          (file) => file.version === compatibility.toVersion && file.name === compatibility.toName
+        ) &&
+        files.some(
+          (file) =>
+            file.version === compatibility.fromVersion && file.name !== compatibility.fromName
+        )
+    );
+    const knownLegacySlotCollision = LEGACY_VERSION_SLOT_MIGRATIONS.some(
+      (legacy) =>
+        legacy.version === occupied.version &&
+        legacy.name === occupied.name &&
+        files.some((file) => file.version === legacy.version && file.name !== legacy.name)
+    );
+    const knownRepairableCollision = knownRenumberedCollision || knownLegacySlotCollision;
+    if (knownRepairableCollision) continue;
+
+    throw new Error(
+      `[Migration] Required table "${required.tableName}" is missing, but version ` +
+        `${required.version} is recorded as unknown migration "${occupied.name}" instead of ` +
+        `"${required.name}". Refusing to treat this database as current.`
+    );
+  }
+}
+
+function findAtomicPhysicalReplays(
+  db: SqliteAdapter,
+  files: Array<{ version: string; name: string; path: string }>
+): Set<string> {
+  const replayVersions = new Set<string>();
+
+  for (const required of REQUIRED_PHYSICAL_MIGRATIONS) {
+    if (hasPhysicalTable(db, required.tableName)) continue;
+
+    const migrationExists = files.some(
+      (file) => file.version === required.version && file.name === required.name
+    );
+    if (!migrationExists) continue;
+
+    const applied = db
+      .prepare("SELECT version, name FROM _omniroute_migrations WHERE version = ? AND name = ?")
+      .get(required.version, required.name) as { version: string; name: string } | undefined;
+    if (!applied) continue;
+
+    replayVersions.add(required.version);
+    console.warn(
+      `[Migration] Will atomically replay ${required.version}_${required.name}: ledger recorded ` +
+        `"${applied.name}" but required table "${required.tableName}" is missing.`
+    );
+  }
+
+  return replayVersions;
 }
 
 function ensureColumn(db: SqliteAdapter, tableName: string, columnName: string, ddl: string): void {
@@ -731,8 +822,17 @@ function reconcileRenumberedMigrations(
     }
 
     const targetRow = db
-      .prepare("SELECT version FROM _omniroute_migrations WHERE version = ?")
-      .get(compatibility.toVersion) as { version: string } | undefined;
+      .prepare("SELECT version, name FROM _omniroute_migrations WHERE version = ?")
+      .get(compatibility.toVersion) as { version: string; name: string } | undefined;
+
+    const isSameSlotReplacement = compatibility.fromVersion === compatibility.toVersion;
+    if (targetRow && !isSameSlotReplacement && targetRow.name !== compatibility.toName) {
+      throw new Error(
+        `[Migration] Cannot reconcile ${compatibility.fromVersion}_${compatibility.fromName}: ` +
+          `target version ${compatibility.toVersion} is occupied by unknown migration ` +
+          `"${targetRow.name}" (expected "${compatibility.toName}").`
+      );
+    }
 
     const applyRepair = db.transaction(() => {
       if (targetRow) {
@@ -834,61 +934,263 @@ function rehomeLegacyVersionSlotMigrations(
   return repaired;
 }
 
-/**
- * Read a persisted `dbBackup` retention setting through the adapter that is ALREADY open
- * for this migration run.
- *
- * `backup.ts`'s equivalent goes through `getDbInstance()`, which is unsafe here: this
- * code runs from inside database initialization, so asking for the singleton would
- * re-enter it. Reading off `db` keeps the same stored values without that risk. A DB too
- * old to have `key_value` yet simply falls back to the default.
- */
-function readStoredBackupSetting(db: SqliteAdapter, key: string, min: number): number | undefined {
-  try {
+function hasLedgerRepairCandidates(
+  db: SqliteAdapter,
+  files: Array<{ version: string; name: string; path: string }>
+): boolean {
+  const diskNamesByVersion = new Map(files.map((file) => [file.version, file.name]));
+  for (const legacy of LEGACY_VERSION_SLOT_MIGRATIONS) {
+    const diskName = diskNamesByVersion.get(legacy.version);
+    if (!diskName || diskName === legacy.name) continue;
     const row = db
-      .prepare("SELECT value FROM key_value WHERE namespace = ? AND key = ?")
-      .get("dbBackup", key) as { value?: string } | undefined;
-    if (!row?.value) return undefined;
-    const parsed = JSON.parse(row.value);
-    return Number.isInteger(parsed) && parsed >= min ? parsed : undefined;
-  } catch {
-    return undefined;
+      .prepare("SELECT 1 FROM _omniroute_migrations WHERE version = ? AND name = ?")
+      .get(legacy.version, legacy.name);
+    if (row) return true;
   }
+
+  for (const compatibility of RENAMED_MIGRATION_COMPATIBILITY) {
+    const hasTargetFile = files.some(
+      (file) => file.version === compatibility.toVersion && file.name === compatibility.toName
+    );
+    const hasSourceFile = files.some(
+      (file) => file.version === compatibility.fromVersion && file.name !== compatibility.fromName
+    );
+    if (!hasTargetFile || !hasSourceFile) continue;
+    const row = db
+      .prepare("SELECT 1 FROM _omniroute_migrations WHERE version = ? AND name = ?")
+      .get(compatibility.fromVersion, compatibility.fromName);
+    if (row) return true;
+  }
+
+  return false;
 }
 
-/**
- * Enforce the backup retention budget after a pre-migration snapshot (#10421).
- *
- * Precedence matches `backup.ts`: env override → persisted operator setting → default.
- * Never throws: a migration must not fail because housekeeping did.
- */
-function pruneMigrationBackups(db: SqliteAdapter, backupDir: string): void {
+function fsyncDirectoryEntry(directory: string): void {
+  let fd: number | null = null;
   try {
-    const maxFiles = process.env.DB_BACKUP_MAX_FILES
-      ? parsePositiveInt(process.env.DB_BACKUP_MAX_FILES, MAX_DB_BACKUPS)
-      : (readStoredBackupSetting(db, "maxFiles", 1) ?? MAX_DB_BACKUPS);
-    const retentionDays = process.env.DB_BACKUP_RETENTION_DAYS
-      ? parseNonNegativeInt(process.env.DB_BACKUP_RETENTION_DAYS, DEFAULT_DB_BACKUP_RETENTION_DAYS)
-      : (readStoredBackupSetting(db, "retentionDays", 0) ?? DEFAULT_DB_BACKUP_RETENTION_DAYS);
+    fd = fs.openSync(directory, "r");
+    fs.fsyncSync(fd);
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    const windowsDirectoryHandleUnsupported =
+      process.platform === "win32" &&
+      (code === "EACCES" || code === "EPERM" || code === "EISDIR" || code === "EINVAL");
+    if (!windowsDirectoryHandleUnsupported) throw error;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
 
-    const result = pruneBackupDirectory({ backupDir, maxFiles, retentionDays });
-    if (result.deletedFiles > 0) {
-      console.log(
-        `[Migration] Pruned ${result.deletedFiles} old backup file(s) ` +
-          `(${result.keptBackupFamilies} kept, maxFiles=${maxFiles}, retentionDays=${retentionDays}).`
-      );
+function hashFileSync(filePath: string): string {
+  const hash = createHash("sha256");
+  const fd = fs.openSync(filePath, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  let position = 0;
+
+  try {
+    while (true) {
+      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, position);
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+      position += bytesRead;
     }
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.warn(`[Migration] Failed to prune old backups: ${message}`);
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  return hash.digest("hex");
+}
+
+type PreMigrationBackupReceipt = {
+  path: string;
+  sha256: string;
+};
+
+function getReusablePreMigrationBackup(
+  candidatePath: string,
+  expectedSha256: string
+): PreMigrationBackupReceipt | null {
+  if (!fs.existsSync(candidatePath)) return null;
+
+  const before = fs.lstatSync(candidatePath);
+  if (!before.isFile() || hashFileSync(candidatePath) !== expectedSha256) {
+    throw new Error(
+      `[Migration] Content-addressed snapshot path exists with unexpected content: ${candidatePath}`
+    );
+  }
+  const after = fs.lstatSync(candidatePath);
+  if (
+    before.dev !== after.dev ||
+    before.ino !== after.ino ||
+    before.size !== after.size ||
+    before.mtimeMs !== after.mtimeMs
+  ) {
+    throw new Error(
+      `[Migration] Content-addressed snapshot changed while it was being validated: ${candidatePath}`
+    );
+  }
+
+  return { path: candidatePath, sha256: expectedSha256 };
+}
+
+function publishSnapshotWithoutOverwrite(tempPath: string, destination: string): void {
+  // link() publishes a complete same-filesystem image atomically and, unlike rename(),
+  // fails with EEXIST instead of overwriting a path created by another process. There is
+  // deliberately no copy/rename fallback: filesystems without this primitive fail closed
+  // instead of exposing a partial canonical `.sqlite` file after a crash.
+  fs.linkSync(tempPath, destination);
+  const publishedFd = fs.openSync(destination, "r+");
+  try {
+    // Flush through the published name as well as the already-fsynced temp handle.
+    // On Windows this maps to FlushFileBuffers and is the strongest file-level
+    // durability proof available when directory handles are unsupported by Node.
+    fs.fsyncSync(publishedFd);
+  } finally {
+    fs.closeSync(publishedFd);
+  }
+  fsyncDirectoryEntry(path.dirname(destination));
+}
+
+function fsyncReusableSnapshot(snapshotPath: string): void {
+  const fd = fs.openSync(snapshotPath, "r+");
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+type SqlJsSnapshotClone = {
+  run(sql: string): void;
+  export(): Uint8Array;
+  close(): void;
+};
+
+const SQLITE_HEADER_MIN_BYTES = 100;
+const SQLITE_HEADER_MAGIC = "SQLite format 3\0";
+const SQLITE_CHANGE_COUNTER_OFFSET = 24;
+const SQLITE_VERSION_VALID_FOR_OFFSET = 92;
+const SQLITE_STANDALONE_CHANGE_COUNTER = 1;
+
+function exportCanonicalSqlJsSnapshot(raw: { export: () => Uint8Array }): Buffer {
+  const RawDatabase = (
+    raw as unknown as { constructor: new (data: Uint8Array) => SqlJsSnapshotClone }
+  ).constructor;
+  let clone: SqlJsSnapshotClone | null = null;
+
+  try {
+    // A rolled-back sql.js SAVEPOINT can leave SQLite's physical change counter advanced
+    // even though every logical row/schema change was undone. Canonicalize only a detached
+    // clone: VACUUM removes rollback-only page artifacts without touching the live database.
+    clone = new RawDatabase(raw.export());
+    clone.run("VACUUM");
+    const canonical = Buffer.from(clone.export());
+
+    if (
+      canonical.length < SQLITE_HEADER_MIN_BYTES ||
+      canonical.subarray(0, SQLITE_HEADER_MAGIC.length).toString("binary") !== SQLITE_HEADER_MAGIC
+    ) {
+      throw new Error("sql.js export did not produce a valid SQLite file header");
+    }
+
+    // SQLite file-header offsets 24 and 92 are the change counter and
+    // version-valid-for number. VACUUM keeps the two equal, but seeds them from the
+    // source image, so an otherwise identical rolled-back retry still gets a different
+    // byte hash. A standalone snapshot has no open readers to invalidate; assigning the
+    // same stable value to both fields preserves a valid/restorable header while making
+    // the complete canonical image deterministic.
+    canonical.writeUInt32BE(SQLITE_STANDALONE_CHANGE_COUNTER, SQLITE_CHANGE_COUNTER_OFFSET);
+    canonical.writeUInt32BE(SQLITE_STANDALONE_CHANGE_COUNTER, SQLITE_VERSION_VALID_FOR_OFFSET);
+    return canonical;
+  } finally {
+    clone?.close();
+  }
+}
+
+function writeSqlJsSnapshot(raw: { export: () => Uint8Array }, tempPath: string): void {
+  let fd: number | null = null;
+
+  try {
+    fd = fs.openSync(tempPath, "wx");
+    fs.writeFileSync(fd, exportCanonicalSqlJsSnapshot(raw));
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
+  } catch (error: unknown) {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // The original snapshot error remains authoritative.
+      }
+    }
+    throw error;
+  }
+}
+
+function cleanupOwnedSnapshotTemp(tempDir: string | null, tempPath: string | null): void {
+  if (!tempDir || !fs.existsSync(tempDir)) return;
+
+  try {
+    // `tempDir` comes only from mkdtempSync below. Removing that exact owned directory
+    // lets Node retry Windows/AV EBUSY and EPERM failures without touching canonical backups.
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `[Migration] Failed to remove owned snapshot temp directory` +
+        `${tempPath ? ` (${tempPath})` : ""}: ${message}`
+    );
   }
 }
 
 /**
- * Create a pre-migration backup of the SQLite database using VACUUM INTO.
- * Returns the backup path on success, null on failure.
+ * Run a callback while holding SQLite's IMMEDIATE writer transaction.
+ *
+ * Production adapters expose `immediate()` directly. A small number of long-standing
+ * migration tests and external callers still pass a raw better-sqlite3 Database, whose
+ * transaction wrapper exposes `.immediate()` instead. Supporting both shapes here keeps
+ * the safety transaction real: this must never degrade to a plain callback invocation.
  */
-function createPreMigrationBackup(db: SqliteAdapter): string | null {
+function runImmediateTransaction<T>(db: SqliteAdapter, fn: () => T): T {
+  const adapterImmediate = (db as Partial<SqliteAdapter>).immediate;
+  if (typeof adapterImmediate === "function") {
+    let result!: T;
+    adapterImmediate.call(db, () => {
+      result = fn();
+    });
+    return result;
+  }
+
+  const rawTransaction = db.transaction(fn) as ReturnType<SqliteAdapter["transaction"]> & {
+    immediate?: () => T;
+  };
+  if (typeof rawTransaction.immediate !== "function") {
+    throw new Error("[Migration] Database adapter does not support IMMEDIATE transactions.");
+  }
+  return rawTransaction.immediate();
+}
+
+/**
+ * Create a synchronous pre-migration snapshot.
+ *
+ * Native SQLite drivers use VACUUM INTO. sql.js has an in-memory VFS, so a host
+ * path passed to VACUUM INTO is not writable; export its current database image
+ * directly instead. The SHA-256 content address lives in the first portion of the
+ * canonical `db_<snapshot-id>_<reason>.sqlite` shape, preserving reason parsing while
+ * making unchanged retries an O(1) lookup even with tens of thousands of old backups.
+ * Work happens inside an exclusively-created
+ * temp directory, so failure cleanup has exact ownership. Publication uses an atomic,
+ * no-overwrite hard link. If the filesystem cannot provide that primitive, the caller
+ * fails closed instead of exposing a partial canonical `.sqlite` file. A content hash
+ * reuses an identical prior snapshot, so repeated zero-progress startups retain one
+ * restore point for that database state without ever deleting a published backup.
+ */
+function createPreMigrationBackup(db: SqliteAdapter): PreMigrationBackupReceipt | null {
+  let backupPath: string | null = null;
+  let tempPath: string | null = null;
+  let tempDir: string | null = null;
+
   try {
     const sqliteFile = db.name;
     if (!sqliteFile || sqliteFile === ":memory:") return null;
@@ -896,25 +1198,83 @@ function createPreMigrationBackup(db: SqliteAdapter): string | null {
     const backupDir = path.join(path.dirname(sqliteFile), "db_backups");
     if (!fs.existsSync(backupDir)) {
       fs.mkdirSync(backupDir, { recursive: true });
+      fsyncDirectoryEntry(path.dirname(backupDir));
     }
 
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const backupPath = path.join(backupDir, `db_${timestamp}_pre-migration.sqlite`);
-    const escapedBackupPath = backupPath.replace(/'/g, "''");
+    tempDir = fs.mkdtempSync(path.join(backupDir, ".migration-snapshot-"));
+    tempPath = path.join(tempDir, "snapshot.sqlite");
 
-    db.exec(`VACUUM INTO '${escapedBackupPath}'`);
+    if (db.driver === "sql.js") {
+      const raw = db.raw as { export?: () => Uint8Array } | null;
+      if (!raw || typeof raw.export !== "function") {
+        throw new Error("sql.js adapter does not expose database export()");
+      }
+      writeSqlJsSnapshot(raw as { export: () => Uint8Array }, tempPath);
+    } else {
+      const escapedTempPath = tempPath.replace(/'/g, "''");
+      const snapshotDb = tryOpenSync(sqliteFile, { readonly: true, fileMustExist: true });
+      if (!snapshotDb) {
+        throw new Error("no synchronous read-only SQLite driver is available for snapshotting");
+      }
+      try {
+        snapshotDb.exec(`VACUUM INTO '${escapedTempPath}'`);
+      } finally {
+        snapshotDb.close();
+      }
+      const fd = fs.openSync(tempPath, "r+");
+      try {
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+
+    const sha256 = hashFileSync(tempPath);
+    backupPath = path.join(backupDir, `db_state-${sha256}_pre-migration.sqlite`);
+    const reusable = getReusablePreMigrationBackup(backupPath, sha256);
+    if (reusable) {
+      fsyncReusableSnapshot(reusable.path);
+      fsyncDirectoryEntry(backupDir);
+      cleanupOwnedSnapshotTemp(tempDir, tempPath);
+      tempDir = null;
+      tempPath = null;
+      console.log(`[Migration] Reusing identical pre-migration backup: ${reusable.path}`);
+      return reusable;
+    }
+
+    try {
+      publishSnapshotWithoutOverwrite(tempPath, backupPath);
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException | null)?.code !== "EEXIST") throw error;
+      const racedReusable = getReusablePreMigrationBackup(backupPath, sha256);
+      if (!racedReusable) throw error;
+      fsyncReusableSnapshot(racedReusable.path);
+      fsyncDirectoryEntry(backupDir);
+      cleanupOwnedSnapshotTemp(tempDir, tempPath);
+      tempDir = null;
+      tempPath = null;
+      console.log(`[Migration] Reusing concurrently published backup: ${racedReusable.path}`);
+      return racedReusable;
+    }
+    cleanupOwnedSnapshotTemp(tempDir, tempPath);
+    tempDir = null;
+    tempPath = null;
     console.log(`[Migration] Pre-migration backup created: ${backupPath}`);
 
-    // #10421: apply the operator's retention budget right here. Without this the
-    // migration path was the one backup producer that never pruned, so every process
-    // start with a pending migration added ~5 MB forever (observed: 49k files / 204 GB).
-    pruneMigrationBackups(db, backupDir);
-
-    return backupPath;
+    return { path: backupPath, sha256 };
   } catch (err: unknown) {
+    // Never unlink a canonical backup here: publication may have failed because another
+    // actor created it first. The exclusive temp directory is the only cleanup authority.
+    cleanupOwnedSnapshotTemp(tempDir, tempPath);
     const message = err instanceof Error ? err.message : String(err);
     console.warn(`[Migration] Failed to create pre-migration backup: ${message}`);
-    return null;
+    throw new Error(
+      `[Migration] Refusing to migrate an existing database without a durable snapshot. ` +
+        `Snapshot creation failed: ${message}. The DATA_DIR filesystem must support atomic ` +
+        `no-overwrite hard links, durable file synchronization, and directory synchronization ` +
+        `where the platform exposes it.`,
+      { cause: err instanceof Error ? err : undefined }
+    );
   }
 }
 
@@ -932,10 +1292,248 @@ export function runMigrations(db: SqliteAdapter, options?: { isNewDb?: boolean }
   ensureMigrationsTable(db);
 
   const files = filterSupersededDuplicateMigrations(getMigrationFiles());
-  rehomeLegacyVersionSlotMigrations(db, files);
-  reconcileRenumberedMigrations(db, files);
-  const applied = getAppliedVersions(db);
-  const appliedRecords = getAppliedRecords(db);
+  validateRequiredPhysicalMigrationProvenance(db, files);
+  let preMigrationBackup: PreMigrationBackupReceipt | null = null;
+  let plan!: {
+    atomicPhysicalReplays: Set<string>;
+    appliedRecords: Array<{ version: string; name: string }>;
+    pending: typeof files;
+    deferredUnsupported: typeof files;
+    highestAppliedBeforeMigrations: number;
+  };
+  let count = 0;
+
+  const preliminaryApplied = getAppliedVersions(db);
+  const preliminaryAtomicReplays = findAtomicPhysicalReplays(db, files);
+  const preliminaryPending = files.filter(
+    (file) => !preliminaryApplied.has(file.version) || preliminaryAtomicReplays.has(file.version)
+  );
+  const preliminaryDeferred = preliminaryPending.filter((migration) =>
+    isDeferredUnsupportedMigration(db, migration)
+  );
+  const preliminaryActionable = preliminaryPending.filter(
+    (migration) => !preliminaryDeferred.some((deferred) => deferred.version === migration.version)
+  );
+  const preliminaryHasRepairCandidates = hasLedgerRepairCandidates(db, files);
+
+  // Preserve the historical read-only/no-op path. Merely checking an already-current
+  // database must not acquire a writer lock (or fail SQLITE_BUSY because another supported
+  // host currently owns one). Safety state is recomputed under IMMEDIATE whenever work exists.
+  if (preliminaryActionable.length === 0 && !preliminaryHasRepairCandidates) {
+    const numericApplied = Array.from(preliminaryApplied)
+      .map((version) => Number.parseInt(version, 10))
+      .filter((version) => !Number.isNaN(version));
+    plan = {
+      atomicPhysicalReplays: preliminaryAtomicReplays,
+      appliedRecords: getAppliedRecords(db),
+      pending: preliminaryPending,
+      deferredUnsupported: preliminaryDeferred,
+      highestAppliedBeforeMigrations: numericApplied.length > 0 ? Math.max(...numericApplied) : 0,
+    };
+  }
+
+  // sql.js export() finalizes its active SAVEPOINT, so exporting from inside
+  // `db.immediate()` would make a later safety throw unable to roll repairs back.
+  // Its adapter is synchronous and in-memory, so no JavaScript writer can interleave
+  // between this preflight/export and the immediately following savepoint.
+  if (
+    !plan &&
+    db.driver === "sql.js" &&
+    (preliminaryActionable.length > 0 || preliminaryHasRepairCandidates)
+  ) {
+    const freshSeedOnly =
+      preliminaryApplied.size === 1 &&
+      preliminaryApplied.has("001") &&
+      inferPhysicalSchemaBaseline(db) === null &&
+      hasTable(db, "provider_connections");
+    const needsSnapshot =
+      (preliminaryActionable.length > 0 || preliminaryHasRepairCandidates) &&
+      db.name !== ":memory:" &&
+      !isNewDb &&
+      !freshSeedOnly &&
+      preliminaryApplied.size > 0;
+
+    if (needsSnapshot) {
+      preMigrationBackup = createPreMigrationBackup(db);
+      if (!preMigrationBackup) {
+        throw new Error(
+          "[Migration] Refusing to migrate an existing database without a durable snapshot. " +
+            "The DATA_DIR filesystem must support atomic hard-link publication."
+        );
+      }
+    }
+  }
+
+  // Hold SQLite's native writer lock through snapshot selection, compatibility repairs,
+  // and the mass-safety decision. Native adapters open a separate read-only connection
+  // for VACUUM INTO while competing writers remain blocked. The outer transaction then
+  // commits before migrations so the repository's one-transaction-per-file contract stays
+  // intact: an earlier successful migration remains committed if a later file fails.
+  if (!plan)
+    runImmediateTransaction(db, () => {
+      const appliedBeforeRepair = getAppliedVersions(db);
+      const hadAppliedBeforeRepair = appliedBeforeRepair.size > 0;
+      const preliminaryAtomicReplays = findAtomicPhysicalReplays(db, files);
+      const preliminaryPending = files.filter(
+        (file) =>
+          !appliedBeforeRepair.has(file.version) || preliminaryAtomicReplays.has(file.version)
+      );
+      const preliminaryActionable = preliminaryPending.filter(
+        (migration) => !isDeferredUnsupportedMigration(db, migration)
+      );
+      const freshSeedBeforeRepair =
+        appliedBeforeRepair.size === 1 &&
+        appliedBeforeRepair.has("001") &&
+        inferPhysicalSchemaBaseline(db) === null &&
+        hasTable(db, "provider_connections");
+      const mayWriteExistingDatabase =
+        preliminaryActionable.length > 0 || hasLedgerRepairCandidates(db, files);
+      const needsSnapshot =
+        mayWriteExistingDatabase &&
+        db.name !== ":memory:" &&
+        !isNewDb &&
+        !freshSeedBeforeRepair &&
+        hadAppliedBeforeRepair;
+
+      if (needsSnapshot && !preMigrationBackup) {
+        if (db.driver === "sql.js") {
+          throw new Error(
+            "[Migration] sql.js safety state changed after its pre-transaction snapshot preflight; " +
+              "refusing to export from inside the rollback savepoint."
+          );
+        }
+        preMigrationBackup = createPreMigrationBackup(db);
+        if (!preMigrationBackup) {
+          throw new Error(
+            "[Migration] Refusing to migrate an existing database without a durable snapshot. " +
+              "The DATA_DIR filesystem must support atomic hard-link publication."
+          );
+        }
+      }
+
+      rehomeLegacyVersionSlotMigrations(db, files);
+      reconcileRenumberedMigrations(db, files);
+
+      const atomicPhysicalReplays = findAtomicPhysicalReplays(db, files);
+      const applied = getAppliedVersions(db);
+      const appliedRecords = getAppliedRecords(db);
+      const pending = files.filter(
+        (file) => !applied.has(file.version) || atomicPhysicalReplays.has(file.version)
+      );
+      const deferredUnsupported = pending.filter((migration) =>
+        isDeferredUnsupportedMigration(db, migration)
+      );
+      const actionablePending = pending.filter(
+        (migration) =>
+          !deferredUnsupported.some((deferred) => deferred.version === migration.version)
+      );
+      const isFreshSeedOnly =
+        applied.size === 1 &&
+        applied.has("001") &&
+        inferPhysicalSchemaBaseline(db) === null &&
+        hasTable(db, "provider_connections");
+      const requiresDurableBackup =
+        actionablePending.length > 0 &&
+        db.name !== ":memory:" &&
+        !isNewDb &&
+        !isFreshSeedOnly &&
+        (applied.size > 0 || hadAppliedBeforeRepair);
+
+      // Recompute under the same writer transaction as repairs and fail before any
+      // ledger mutation can commit if the durable-snapshot requirement is not met.
+      if (requiresDurableBackup && !preMigrationBackup) {
+        throw new Error(
+          "[Migration] Refusing to migrate an existing database without a durable snapshot. " +
+            "The DATA_DIR filesystem must support atomic hard-link publication."
+        );
+      }
+
+      const isTestEnvironment = isAutomatedTestProcess();
+      const maxPendingMigrations = resolveMaxPendingMigrations();
+      if (
+        actionablePending.length > 0 &&
+        !isTestEnvironment &&
+        !isNewDb &&
+        !isFreshSeedOnly &&
+        maxPendingMigrations > 0 &&
+        (applied.size > 0 || hadAppliedBeforeRepair) &&
+        actionablePending.length > maxPendingMigrations
+      ) {
+        const physicalBaseline = inferPhysicalSchemaBaseline(db);
+        const plausiblePendingCount = physicalBaseline
+          ? getPlausiblePendingCount(files, physicalBaseline.version)
+          : null;
+
+        if (plausiblePendingCount !== null && actionablePending.length <= plausiblePendingCount) {
+          console.warn(
+            `[Migration] Allowing ${actionablePending.length} pending migrations on an existing database ` +
+              `because the physical schema only proves ${physicalBaseline?.version} ` +
+              `(${physicalBaseline?.description}).`
+          );
+        } else {
+          const schemaHint =
+            physicalBaseline && plausiblePendingCount !== null
+              ? ` Physical schema already shows ${physicalBaseline.version} ` +
+                `(${physicalBaseline.description}), so at most ${plausiblePendingCount} pending ` +
+                `migration(s) are expected from a legitimate upgrade.`
+              : "";
+          const bypassHint =
+            ` To bypass this check (e.g. after restoring a backup where the migration ` +
+            `tracking table was wiped), set OMNIROUTE_MAX_PENDING_MIGRATIONS=0 in your ` +
+            `server.env or DATA_DIR/.env and restart.`;
+          const msg =
+            `[Migration] 🛑 ABORT: Detected ${actionablePending.length} pending migrations on an existing database ` +
+            `(threshold is ${maxPendingMigrations}). ` +
+            `This usually means the migration tracking table was accidentally wiped. ` +
+            `Running all migrations from scratch will cause data loss or schema errors.` +
+            schemaHint +
+            bypassHint;
+
+          if (memoizedSafetyAbort && memoizedSafetyAbort.message === msg) {
+            console.error(
+              `[Migration] 🛑 ABORT (repeat — see earlier detail): ` +
+                `${actionablePending.length} pending > threshold ${maxPendingMigrations}. ` +
+                `Set OMNIROUTE_MAX_PENDING_MIGRATIONS=0 to bypass.`
+            );
+            throw memoizedSafetyAbort;
+          }
+          console.error(msg);
+          memoizedSafetyAbort = new MigrationSafetyAbortError(msg);
+          throw memoizedSafetyAbort;
+        }
+      }
+
+      if (
+        preMigrationBackup &&
+        hashFileSync(preMigrationBackup.path) !== preMigrationBackup.sha256
+      ) {
+        throw new Error(
+          "[Migration] Refusing to migrate because the pre-migration snapshot changed before use."
+        );
+      }
+
+      const numericApplied = Array.from(applied)
+        .map((version) => Number.parseInt(version, 10))
+        .filter((version) => !Number.isNaN(version));
+      const highestAppliedBeforeMigrations =
+        numericApplied.length > 0 ? Math.max(...numericApplied) : 0;
+
+      plan = {
+        atomicPhysicalReplays,
+        appliedRecords,
+        pending,
+        deferredUnsupported,
+        highestAppliedBeforeMigrations,
+      };
+    });
+
+  const {
+    atomicPhysicalReplays,
+    appliedRecords,
+    pending,
+    deferredUnsupported,
+    highestAppliedBeforeMigrations,
+  } = plan;
 
   // ── Safety Check 1: Detect migration name mismatches (renumbering) ──
   const mismatches = detectNameMismatches(appliedRecords, files);
@@ -958,34 +1556,15 @@ export function runMigrations(db: SqliteAdapter, options?: { isNewDb?: boolean }
     );
   }
 
-  // ── Gap Reconciliation: Identify non-contiguous missing migrations ──
-  // Do not rely on any highest-version-applied heuristic. We must explicitly
-  // iterate through all missing files on disk and apply them if they are missing
-  // from the _omniroute_migrations table.
-  const numericApplied = Array.from(applied)
-    .map((v) => Number.parseInt(v, 10))
-    .filter((n) => !Number.isNaN(n));
-  const highestApplied = numericApplied.length > 0 ? Math.max(...numericApplied) : 0;
-  const pending = files.filter((f) => {
-    const isMissing = !applied.has(f.version);
-    if (isMissing && Number(f.version) < highestApplied) {
+  for (const migration of pending) {
+    if (Number(migration.version) < highestAppliedBeforeMigrations) {
       console.warn(
         `[Migration] 🔄 RECONCILIATION: Found missing intermediate migration ` +
-          `${f.version}_${f.name} (highest applied is ${highestApplied}). ` +
+          `${migration.version}_${migration.name} ` +
+          `(highest applied is ${highestAppliedBeforeMigrations}). ` +
           `This gap will be back-filled to ensure schema integrity.`
       );
     }
-    return isMissing;
-  });
-  const deferredUnsupported = pending.filter((migration) =>
-    isDeferredUnsupportedMigration(db, migration)
-  );
-  const actionablePending = pending.filter(
-    (migration) => !deferredUnsupported.some((deferred) => deferred.version === migration.version)
-  );
-
-  if (pending.length === 0) {
-    return 0; // Nothing to do
   }
 
   if (deferredUnsupported.length > 0) {
@@ -998,101 +1577,28 @@ export function runMigrations(db: SqliteAdapter, options?: { isNewDb?: boolean }
     );
   }
 
-  // ── Safety Check 2: Mass-migration detection (abort if existing DB + many migrations) ──
-  // Skip in test environments where fresh DBs legitimately have many pending migrations.
-  const isTestEnvironment = isAutomatedTestProcess();
-
-  // #3416: resolve the threshold at call time so OMNIROUTE_MAX_PENDING_MIGRATIONS
-  // can override the default (0 disables the check). The abort message below
-  // interpolates this resolved value, so it auto-reflects any override.
-  const maxPendingMigrations = resolveMaxPendingMigrations();
-
-  // #9934: `omniroute setup`'s openOmniRouteDb writes a partial skeleton file
-  // (provider_connections + key_value) that has never had migrations run. When
-  // the first `serve` opens it and auto-seeds only the 001 marker, the applied
-  // set is exactly {001} — which would otherwise look like a wiped existing DB
-  // and trip this abort on a brand-new install. This is distinct from a real
-  // wiped/backup-restored database: that case has a non-trivial physical schema
-  // (baseline inference is non-null) and full data tables, so it still aborts.
-  // The 001-marker-only state on a provider_connections skeleton is the fresh
-  // auto-seed — let it through. A genuinely empty table is already exempt via
-  // `applied.size > 0`, and an upgraded DB has a non-trivial applied set.
-  const isFreshSeedOnly =
-    applied.size === 1 &&
-    applied.has("001") &&
-    inferPhysicalSchemaBaseline(db) === null &&
-    hasTable(db, "provider_connections");
-
-  if (
-    !isTestEnvironment &&
-    !isNewDb &&
-    !isFreshSeedOnly &&
-    process.env.DISABLE_SQLITE_AUTO_BACKUP !== "true" &&
-    maxPendingMigrations > 0 &&
-    applied.size > 0 &&
-    actionablePending.length > maxPendingMigrations
-  ) {
-    const physicalBaseline = inferPhysicalSchemaBaseline(db);
-    const plausiblePendingCount = physicalBaseline
-      ? getPlausiblePendingCount(files, physicalBaseline.version)
-      : null;
-
-    if (plausiblePendingCount !== null && actionablePending.length <= plausiblePendingCount) {
-      console.warn(
-        `[Migration] Allowing ${actionablePending.length} pending migrations on an existing database ` +
-          `because the physical schema only proves ${physicalBaseline?.version} ` +
-          `(${physicalBaseline?.description}).`
-      );
-    } else {
-      const schemaHint =
-        physicalBaseline && plausiblePendingCount !== null
-          ? ` Physical schema already shows ${physicalBaseline.version} ` +
-            `(${physicalBaseline.description}), so at most ${plausiblePendingCount} pending ` +
-            `migration(s) are expected from a legitimate upgrade.`
-          : "";
-      const bypassHint =
-        ` To bypass this check (e.g. after restoring a backup where the migration ` +
-        `tracking table was wiped), set OMNIROUTE_MAX_PENDING_MIGRATIONS=0 in your ` +
-        `server.env or DATA_DIR/.env and restart.`;
-      const msg =
-        `[Migration] 🛑 ABORT: Detected ${actionablePending.length} pending migrations on an existing database ` +
-        `(threshold is ${maxPendingMigrations}). ` +
-        `This usually means the migration tracking table was accidentally wiped. ` +
-        `Running all migrations from scratch will cause data loss or schema errors.` +
-        schemaHint +
-        bypassHint;
-
-      // #6260: memoize so the cascade of downstream ensureDbInitialized() calls
-      // that re-open the DB throw the SAME instance and only log once.
-      if (memoizedSafetyAbort && memoizedSafetyAbort.message === msg) {
-        console.error(
-          `[Migration] 🛑 ABORT (repeat — see earlier detail): ` +
-            `${actionablePending.length} pending > threshold ${maxPendingMigrations}. ` +
-            `Set OMNIROUTE_MAX_PENDING_MIGRATIONS=0 to bypass.`
-        );
-        throw memoizedSafetyAbort;
-      }
-      console.error(msg);
-      memoizedSafetyAbort = new MigrationSafetyAbortError(msg);
-      throw memoizedSafetyAbort;
-    }
+  if (preMigrationBackup && hashFileSync(preMigrationBackup.path) !== preMigrationBackup.sha256) {
+    throw new Error(
+      "[Migration] Refusing to migrate because the pre-migration snapshot changed before use."
+    );
   }
-
-  // ── Safety Check 3: Pre-migration backup ──
-  // Skip backup if it's a completely fresh database (0 applied and all pending)
-  // or if running in tests (where AUTO_BACKUP might be disabled)
-  if (applied.size > 0 && process.env.DISABLE_SQLITE_AUTO_BACKUP !== "true") {
-    createPreMigrationBackup(db);
-  }
-
-  let count = 0;
 
   for (const migration of pending) {
-    if (isDeferredUnsupportedMigration(db, migration)) {
-      continue;
-    }
+    if (isDeferredUnsupportedMigration(db, migration)) continue;
 
     const applyMigration = db.transaction(() => {
+      if (atomicPhysicalReplays.has(migration.version)) {
+        const removed = db
+          .prepare("DELETE FROM _omniroute_migrations WHERE version = ? AND name = ?")
+          .run(migration.version, migration.name);
+        if (removed.changes !== 1) {
+          throw new Error(
+            `[Migration] Atomic replay lost its expected ledger marker for ` +
+              `${migration.version}_${migration.name}.`
+          );
+        }
+      }
+
       if (isSchemaAlreadyApplied(db, migration)) {
         console.warn(
           `[Migration] Skipped executing ${migration.version}_${migration.name} as schema changes are already present (Idempotency check).`
@@ -1115,28 +1621,35 @@ export function runMigrations(db: SqliteAdapter, options?: { isNewDb?: boolean }
 
     try {
       applyMigration();
-      count++;
+      count += 1;
       console.log(`[Migration] Applied: ${migration.version}_${migration.name}`);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      // "duplicate column name" means the column already exists — end state achieved, mark applied.
-      if (message.includes("duplicate column name")) {
+      if (
+        message.includes("duplicate column name") &&
+        !atomicPhysicalReplays.has(migration.version)
+      ) {
         const applyMarkerOnly = db.transaction(() => {
           db.prepare(
             "INSERT OR IGNORE INTO _omniroute_migrations (version, name) VALUES (?, ?)"
           ).run(migration.version, migration.name);
         });
         applyMarkerOnly();
-        count++;
+        count += 1;
         console.log(
           `[Migration] Applied (column pre-exists): ${migration.version}_${migration.name}`
         );
       } else {
         console.error(`[Migration] FAILED: ${migration.version}_${migration.name} — ${message}`);
-        throw err; // Re-throw to prevent DB from starting in inconsistent state
+        throw err;
       }
     }
   }
+
+  // Retention intentionally does not run inside the migration window. Another process
+  // may still be using a different snapshot as its in-flight restore point. Manual and
+  // scheduled backup paths continue to enforce the operator's retention policy; retries
+  // here are bounded by the deterministic content address instead of destructive pruning.
 
   if (count > 0) {
     console.log(`[Migration] ${count} migration(s) applied successfully.`);
@@ -1170,7 +1683,7 @@ function insertDefaultDatabaseSettings(db: SqliteAdapter) {
 
   // Run in an immediate transaction to avoid nested transactions
   try {
-    db.immediate(() => {
+    runImmediateTransaction(db, () => {
       tx();
     });
   } catch (error) {
