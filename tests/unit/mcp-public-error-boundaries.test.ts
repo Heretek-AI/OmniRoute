@@ -54,10 +54,7 @@ function assertPublicMcpError(result: McpResult): void {
   const text = result.content?.[0]?.text ?? "";
   assert.equal(result.isError, true);
   assert.match(text, /Error:/);
-  assert.doesNotMatch(
-    text,
-    /mcp-boundary-secret|srv\/private|mcp-boundary\.ts|\bat execute\b/i
-  );
+  assert.doesNotMatch(text, /mcp-boundary-secret|srv\/private|mcp-boundary\.ts|\bat execute\b/i);
 }
 
 test.after(() => {
@@ -84,8 +81,7 @@ test.after(() => {
 });
 
 test("core MCP handlers sanitize upstream bodies before public and audit boundaries", async () => {
-  const hostile =
-    "Bearer mcp-fetch-boundary-secret at /srv/private/mcp-fetch-boundary.ts:9:3";
+  const hostile = "Bearer mcp-fetch-boundary-secret at /srv/private/mcp-fetch-boundary.ts:9:3";
   const originalFetch = globalThis.fetch;
   const calledUrls: string[] = [];
   globalThis.fetch = async (input) => {
@@ -98,7 +94,10 @@ test("core MCP handlers sanitize upstream bodies before public and audit boundar
     const result = await handler({ includeMetrics: false });
     const publicText = result.content?.[0]?.text ?? "";
     assert.equal(result.isError, true);
-    assert.doesNotMatch(publicText, /mcp-fetch-boundary-secret|srv\/private|mcp-fetch-boundary\.ts/i);
+    assert.doesNotMatch(
+      publicText,
+      /mcp-fetch-boundary-secret|srv\/private|mcp-fetch-boundary\.ts/i
+    );
     assert.deepEqual(calledUrls, ["http://localhost:20128/api/combos"]);
 
     const audit = await queryAuditEntries({ tool: "omniroute_list_combos", success: false });
@@ -132,9 +131,7 @@ test("Obsidian and dynamic-skill MCP wrappers sanitize thrown errors", async () 
       throw hostile;
     };
     const obsidianHandler = getRegisteredHandler(createMcpServer(), mutableObsidianTool.name);
-    assertPublicMcpError(
-      await obsidianHandler({}, { authInfo: { scopes: ["read:obsidian"] } })
-    );
+    assertPublicMcpError(await obsidianHandler({}, { authInfo: { scopes: ["read:obsidian"] } }));
   } finally {
     mutableObsidianTool.handler = originalObsidianHandler;
   }

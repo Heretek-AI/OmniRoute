@@ -58,9 +58,8 @@ const providersDb = await import("../../src/lib/db/providers.ts");
 const { saveCallLog, waitForCallLogSaves, closeCallLogSaves } =
   await import("../../src/lib/usage/callLogs.ts");
 const { flushProxyLogsSync } = await import("../../src/lib/proxyLogger.ts");
-const { projectProviderRuntimeForPublicResponse, testSingleConnection } = await import(
-  "../../src/app/api/providers/[id]/test/route.ts"
-);
+const { projectProviderRuntimeForPublicResponse, testSingleConnection } =
+  await import("../../src/app/api/providers/[id]/test/route.ts");
 // proxyFetch installs its global dispatcher while the imports above load. Put
 // the deterministic stub back at the final fetch seam so this test can never
 // reach Jules over the network.

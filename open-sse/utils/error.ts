@@ -695,7 +695,9 @@ export async function parseUpstreamError(response: Response, provider: string | 
       const { error: clinepassEnvError } = unwrapClinepassEnvelope(json, provider);
       const extractedMessage = clinepassEnvError
         ? clinepassEnvError.message
-        : json.error?.message || json.message || (typeof json.error === "string" ? json.error : null);
+        : json.error?.message ||
+          json.message ||
+          (typeof json.error === "string" ? json.error : null);
       message =
         typeof extractedMessage === "string"
           ? extractedMessage

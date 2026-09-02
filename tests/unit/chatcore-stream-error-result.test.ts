@@ -19,11 +19,8 @@ fs.mkdirSync(process.env.DATA_DIR, { recursive: true });
 fs.mkdirSync(process.env.OMNIROUTE_PLUGINS_DIR, { recursive: true });
 
 const core = await import("../../src/lib/db/core.ts");
-const {
-  isSemaphoreCapacityError,
-  createStreamingErrorResult,
-  getUpstreamErrorIdentifier,
-} = await import("../../open-sse/handlers/chatCore/streamErrorResult.ts");
+const { isSemaphoreCapacityError, createStreamingErrorResult, getUpstreamErrorIdentifier } =
+  await import("../../open-sse/handlers/chatCore/streamErrorResult.ts");
 
 test.after(() => {
   core.resetDbInstance();

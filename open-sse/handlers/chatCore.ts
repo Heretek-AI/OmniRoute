@@ -5,10 +5,7 @@ import {
 import { injectMemoryAndSkills } from "./chatCore/memorySkillsInjection.ts";
 import { resolveChatCoreRequestSetup } from "./chatCore/requestSetup.ts";
 import { normalizeOpenAICompatibleTools } from "./chatCore/openAICompatibleTools.ts";
-import {
-  buildFailureUsageRecord,
-  projectFailureUsageErrorCode,
-} from "./chatCore/failureUsage.ts";
+import { buildFailureUsageRecord, projectFailureUsageErrorCode } from "./chatCore/failureUsage.ts";
 import { estimateFinalInputTokens } from "./chatCore/contextEstimation.ts";
 import {
   extractSystemRoleMessages,
@@ -2508,15 +2505,12 @@ export async function handleChatCore({
         success: false,
         status: statusCode,
         error: safeMessage,
-        response: new Response(
-          JSON.stringify(errorBody),
-          {
-            status: statusCode,
-            headers: {
-              "Content-Type": "application/json",
-            },
-          }
-        ),
+        response: new Response(JSON.stringify(errorBody), {
+          status: statusCode,
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }),
       };
     }
 

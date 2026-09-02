@@ -200,7 +200,13 @@ function decodeSecurityEscapesOnce(
       continue;
     }
 
-    if (escaped === "b" || escaped === "f" || escaped === "n" || escaped === "r" || escaped === "t") {
+    if (
+      escaped === "b" ||
+      escaped === "f" ||
+      escaped === "n" ||
+      escaped === "r" ||
+      escaped === "t"
+    ) {
       output.push(" ");
       index = runEnd;
       changed = true;
@@ -227,7 +233,13 @@ function hasResidualSecurityEscape(value: string): boolean {
     while (index < value.length && value.charCodeAt(index) === 0x5c) index++;
     if (index >= value.length) return false;
     const escaped = value[index];
-    if (escaped === "b" || escaped === "f" || escaped === "n" || escaped === "r" || escaped === "t") {
+    if (
+      escaped === "b" ||
+      escaped === "f" ||
+      escaped === "n" ||
+      escaped === "r" ||
+      escaped === "t"
+    ) {
       return true;
     }
     if (escaped === "/" || escaped === '"' || escaped === "'") return true;
@@ -606,9 +618,7 @@ export function redactSensitiveErrorText(value: string): string {
     false,
     MAX_ERROR_LEN + MAX_ERROR_SCAN_HEADROOM
   );
-  const catalogRedacted = redactKnownCredentialPatterns(
-    redactSensitiveUrlCredentials(normalized)
-  );
+  const catalogRedacted = redactKnownCredentialPatterns(redactSensitiveUrlCredentials(normalized));
   const commonCredentialsRedacted = redactBase64DataUrls(redactPrivateKeyPemBlocks(catalogRedacted))
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "$1 [REDACTED]")
     .replace(STRONG_CREDENTIAL_TOKEN_GLOBAL, "[REDACTED]");
@@ -626,9 +636,7 @@ export function containsSensitiveErrorCredential(value: string): boolean {
     .replace(STRONG_CREDENTIAL_TOKEN_GLOBAL, "[REDACTED]");
   if (directRedacted !== normalized) return true;
   if (
-    /(?:^|\s)--(?:api[-_]?key|token|password|secret)\s+(?:"[^"]*"|'[^']*'|\S+)/i.test(
-      normalized
-    )
+    /(?:^|\s)--(?:api[-_]?key|token|password|secret)\s+(?:"[^"]*"|'[^']*'|\S+)/i.test(normalized)
   ) {
     return true;
   }
@@ -776,16 +784,11 @@ function normalizeUpstreamClassificationKey(key: string): UpstreamClassification
   return null;
 }
 
-function projectUpstreamErrorIdentifier(
-  key: UpstreamClassificationKey,
-  value: unknown
-): unknown {
+function projectUpstreamErrorIdentifier(key: UpstreamClassificationKey, value: unknown): unknown {
   if (typeof value === "number") {
     if (!Number.isInteger(value)) return undefined;
     if (key === "code" && value >= 0 && value <= 16) return value;
-    return (key === "code" || key === "status") && value >= 100 && value <= 599
-      ? value
-      : undefined;
+    return (key === "code" || key === "status") && value >= 100 && value <= 599 ? value : undefined;
   }
   if (typeof value !== "string") return undefined;
   if (key === "status" && SAFE_UPSTREAM_STATUS_IDENTIFIERS.has(value.toUpperCase())) {

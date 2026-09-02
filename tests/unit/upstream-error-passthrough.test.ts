@@ -83,11 +83,7 @@ test("upstream error passthrough", async (t) => {
         "spawn failed: helper --password 'opaque-cli-password-9382746'",
         `upstream echoed hf_${"A".repeat(34)}`,
       ]) {
-        assert.equal(
-          shouldPassthroughUpstreamError(422, { error: { message } }),
-          false,
-          message
-        );
+        assert.equal(shouldPassthroughUpstreamError(422, { error: { message } }), false, message);
       }
     }
   );

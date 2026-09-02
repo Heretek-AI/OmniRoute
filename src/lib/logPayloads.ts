@@ -183,8 +183,7 @@ function projectErrorSubtreesForLog(
       const normalizedKey = key.replace(/[-_]/g, "").toLowerCase();
       const preservePartialOutput =
         responsesFailure && protocolResponseObject && normalizedKey === "output";
-      const childIsProtocolResponse =
-        declaresResponsesFailure && normalizedKey === "response";
+      const childIsProtocolResponse = declaresResponsesFailure && normalizedKey === "response";
       const result = projectErrorSubtreesForLog(
         entryValue,
         seen,

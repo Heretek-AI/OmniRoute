@@ -102,8 +102,7 @@ function isWindowsRootRelativePathAt(value: string, start: number): boolean {
   const root = value.slice(start + 1, firstSeparator).toLowerCase();
   if (WINDOWS_ROOT_RELATIVE_ROOTS.has(root)) return true;
   return (
-    firstSeparator < tokenEnd - 1 ||
-    tokenContainsPathExtensionEvidence(value, start + 1, tokenEnd)
+    firstSeparator < tokenEnd - 1 || tokenContainsPathExtensionEvidence(value, start + 1, tokenEnd)
   );
 }
 
@@ -796,10 +795,7 @@ function looksLikeAtSignStackFrameAt(value: string, frameStart: number): boolean
   const tokenEnd = trimPathSpanEnd(value, frameStart, findTokenEnd(value, frameStart));
   const atSign = value.indexOf("@", frameStart);
   if (atSign <= frameStart || atSign >= tokenEnd || atSign - frameStart > 256) return false;
-  return (
-    isStackFrameLabel(value, frameStart, atSign) &&
-    isRecognizedStackPathAt(value, atSign + 1)
-  );
+  return isStackFrameLabel(value, frameStart, atSign) && isRecognizedStackPathAt(value, atSign + 1);
 }
 
 function findSerializedStackFrameStart(value: string): number {

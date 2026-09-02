@@ -256,9 +256,7 @@ test("skill errors are sanitized before OpenAI tool-result response shapes", asy
       choices: [
         {
           message: {
-            tool_calls: [
-              { id: "chat-error", function: { name: "broken@1.0.0", arguments: "{}" } },
-            ],
+            tool_calls: [{ id: "chat-error", function: { name: "broken@1.0.0", arguments: "{}" } }],
           },
         },
       ],
@@ -288,7 +286,10 @@ test("skill errors are sanitized before OpenAI tool-result response shapes", asy
   const serialized = JSON.stringify({ chatResult, responsesResult, thrownResult });
 
   assert.match(serialized, /skill failure|Skill not found/i);
-  assert.doesNotMatch(serialized, /skill-public-secret|srv\/private|skill-handler\.ts|\bat execute\b/i);
+  assert.doesNotMatch(
+    serialized,
+    /skill-public-secret|srv\/private|skill-handler\.ts|\bat execute\b/i
+  );
 });
 
 test("failed builtin outputs are sanitized before public tool results", async () => {
@@ -297,7 +298,10 @@ test("failed builtin outputs are sanitized before public tool results", async ()
     "    at run (/srv/private/builtin-output.ts:9:4)";
   const mutableBuiltins = builtinSkills as unknown as Record<
     string,
-    (input: Record<string, unknown>, context: Record<string, unknown>) => Promise<Record<string, unknown>>
+    (
+      input: Record<string, unknown>,
+      context: Record<string, unknown>
+    ) => Promise<Record<string, unknown>>
   >;
   const originalHttpRequest = mutableBuiltins.http_request;
 
@@ -314,10 +318,7 @@ test("failed builtin outputs are sanitized before public tool results", async ()
     );
     const serialized = JSON.stringify(results);
 
-    assert.equal(
-      (results[0]?.result as Record<string, unknown>)?.status,
-      502
-    );
+    assert.equal((results[0]?.result as Record<string, unknown>)?.status, 502);
     assert.doesNotMatch(
       serialized,
       /builtin-output-secret|srv\/private|builtin-output\.ts|\bat run\b/i

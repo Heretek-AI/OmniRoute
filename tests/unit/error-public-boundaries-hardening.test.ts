@@ -51,7 +51,9 @@ test("sanitizeErrorMessage removes non-source paths, credentials, and serialized
 });
 
 test("sanitizeErrorMessage redacts Windows drive-root-relative filesystem paths", () => {
-  const plain = sanitizeErrorMessage(String.raw`Provider failed at \Users\admin\private\secret.txt`);
+  const plain = sanitizeErrorMessage(
+    String.raw`Provider failed at \Users\admin\private\secret.txt`
+  );
   const quoted = sanitizeErrorMessage(
     String.raw`Provider failed opening "\Windows\Temp\native.dll"`
   );

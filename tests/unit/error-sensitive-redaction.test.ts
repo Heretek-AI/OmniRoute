@@ -161,7 +161,10 @@ test("sanitizeErrorMessage redacts closed and unterminated PGP private-key armor
   // post-block suffix is intentionally not recovered from a multiline secret.
   assert.equal(closed, "provider returned [REDACTED]");
   assert.equal(unterminated, "provider returned [REDACTED]");
-  assert.doesNotMatch(`${closed} ${unterminated}`, /pgp-private-material|pgp-unterminated-material/);
+  assert.doesNotMatch(
+    `${closed} ${unterminated}`,
+    /pgp-private-material|pgp-unterminated-material/
+  );
 });
 
 test("sanitizeUpstreamDetails drops credential headers and redacts data URLs", () => {
