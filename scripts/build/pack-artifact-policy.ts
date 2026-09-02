@@ -216,12 +216,6 @@ export const PACK_ARTIFACT_REQUIRED_PATHS: string[] = [
   "bin/mcpStdioConsoleGuard.mjs",
   "bin/nodeRuntimeSupport.mjs",
   "bin/omniroute.mjs",
-  // #11437: bin/omniroute.mjs imports ./cli/utils/volatileEnvPath.mjs at startup
-  // (describeVolatileEnvWarning — flags a .env living inside the installed package).
-  // bin/cli/ is only an allowlist PREFIX, so its absence would never fail the
-  // unexpected-paths check; list it REQUIRED so a regression is loud (#7065 class,
-  // enforced by tests/unit/pack-artifact-entrypoint-closures.test.ts).
-  "bin/cli/utils/volatileEnvPath.mjs",
   // #7808: aliasResolver + its hook file. bin/omniroute.mjs imports
   // bin/aliasResolver.mjs at startup, which in turn registers
   // bin/aliasResolverHook.mjs as the ESM loader. Both must ship in the tarball

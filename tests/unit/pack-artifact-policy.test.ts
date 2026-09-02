@@ -15,6 +15,21 @@ import {
   parseJsonValuesOutput,
 } from "../../scripts/build/pack-artifact-policy.ts";
 
+test("artifact path policy arrays contain no duplicate entries", () => {
+  const policies = {
+    APP_STAGING_ALLOWED_EXACT_PATHS,
+    APP_STAGING_ALLOWED_PATH_PREFIXES,
+    PACK_ARTIFACT_ALLOWED_EXACT_PATHS,
+    PACK_ARTIFACT_ALLOWED_PATH_PREFIXES,
+    PACK_ARTIFACT_REQUIRED_PATHS,
+  };
+
+  for (const [name, paths] of Object.entries(policies)) {
+    const duplicates = [...new Set(paths.filter((entry, index) => paths.indexOf(entry) !== index))];
+    assert.deepEqual(duplicates, [], `${name} contains duplicate paths: ${duplicates.join(", ")}`);
+  }
+});
+
 test("normalizeArtifactPath normalizes slashes and leading relative markers", () => {
   assert.equal(
     normalizeArtifactPath("./app\\scripts\\ad-hoc\\test.js"),
