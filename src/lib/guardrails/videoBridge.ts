@@ -265,9 +265,7 @@ export class VideoBridgeGuardrail extends BaseGuardrail {
         // `false` (never omitted) for a video with frames but no transcript,
         // so plain-video logging/Memory stays unaffected.
         videoBridgeObserved: logRedactionEntries.length > 0,
-        ...(logRedactionEntries.length > 0
-          ? { videoBridgeLogRedaction: logRedactionEntries }
-          : {}),
+        ...(logRedactionEntries.length > 0 ? { videoBridgeLogRedaction: logRedactionEntries } : {}),
         contactSheetsUsed,
         audioFusionRuns,
         audioFusionPartials,

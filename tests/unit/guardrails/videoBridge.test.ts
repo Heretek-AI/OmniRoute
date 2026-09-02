@@ -528,8 +528,7 @@ test("real Video Bridge cache hit preserves the redacted transcript shadow acros
   for (const result of [first, second]) {
     assert.equal(result.meta?.videoBridgeObserved, true);
     const redaction = result.meta?.videoBridgeLogRedaction as
-      | Array<{ redactedText: string }>
-      | undefined;
+      Array<{ redactedText: string }> | undefined;
     assert.equal(redaction?.length, 1);
     assert.match(redaction?.[0]?.redactedText ?? "", /\[redacted-video-transcript\]/);
     assert.doesNotMatch(redaction?.[0]?.redactedText ?? "", /cached secret cue/);

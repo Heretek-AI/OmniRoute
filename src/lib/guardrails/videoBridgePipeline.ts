@@ -139,7 +139,12 @@ function waitForVideoBridgePromise<T>(promise: Promise<T>, signal: AbortSignal):
 // boundary, budgets, cross-source reconciliation, focus scoping) — bump so a
 // cache entry computed under the old, less-restrictive normalization can
 // never be served for a request processed under the new contract.
-const VIDEO_BRIDGE_RESULT_CACHE_VERSION = "v5";
+// v6 (#12150): VideoResultCacheMetadata gained `descriptionRedacted` (the
+// structured transcript-redaction shadow) — bump so a cache entry written
+// before this field existed can never be served with `descriptionRedacted`
+// silently undefined, which would read as "no transcript" / mark
+// `videoBridgeObserved: false` for a video that does carry one.
+const VIDEO_BRIDGE_RESULT_CACHE_VERSION = "v6";
 const VIDEO_BRIDGE_RESULT_CACHE_POLICY = "sampling-then-dedup-v2";
 const VIDEO_BRIDGE_RESULT_CACHE_KEY_KIND = "video-result-v4";
 const VIDEO_BRIDGE_DOWNLOAD_FLIGHT_VERSION = "v1";
