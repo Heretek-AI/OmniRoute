@@ -26,6 +26,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { redactVideoTranscriptFieldsForLog } from "../../src/lib/guardrails/videoBridgeSnapshotRedaction.ts";
+
 const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "omni-video-log-redaction-test-"));
 process.env.DATA_DIR = testDataDir;
 
@@ -263,5 +265,88 @@ test("Scenario A (adversarial review): a message prepended AFTER the guardrail b
     persisted.messages[0].content,
     "You are a helpful assistant.",
     "the prepended system message must be untouched"
+  );
+});
+
+// #12150 P2 surface 1 (the dominant transcript-retention leak): the RAW client-request
+// snapshot passed to reqLogger.logClientRawRequest (open-sse/handlers/chatCore.ts's
+// "0. Log client raw request" step) is a DIFFERENT sink from persistAttemptLogs above —
+// it is captured before the guardrail chain even runs, so it carries the client's raw
+// `transcript`/`audioTranscript` FIELDS on a structured video part, not a flattened
+// description string. Importing the real chatCore.ts here would pull the full
+// request-pipeline dependency graph (executors, providers, combo routing, DB-backed
+// settings, ...) into the test just to reach one guarded ternary a few hundred lines into
+// a 5900+ line handler, for no additional proof beyond what's below — so this exercises
+// the EXACT call-site pattern
+// (`videoBridgeObserved ? redactVideoTranscriptFieldsForLog(body) : body`) against a fake
+// logClientRawRequest. The pure helper itself has its own thorough suite in
+// tests/unit/guardrails/videoBridgeSnapshotRedaction.test.ts.
+function fakeReqLogger() {
+  const calls: unknown[] = [];
+  return {
+    calls,
+    logClientRawRequest(_endpoint: unknown, body: unknown, _headers?: unknown) {
+      calls.push(body);
+    },
+  };
+}
+
+/** Mirrors chatCore.ts's guarded logClientRawRequest call site verbatim. */
+function callLogClientRawRequestAsChatCoreDoes(
+  reqLogger: ReturnType<typeof fakeReqLogger>,
+  clientRawRequest: { endpoint: string; body: unknown; headers: unknown },
+  videoBridgeObserved: boolean
+) {
+  reqLogger.logClientRawRequest(
+    clientRawRequest.endpoint,
+    videoBridgeObserved
+      ? redactVideoTranscriptFieldsForLog(clientRawRequest.body)
+      : clientRawRequest.body,
+    clientRawRequest.headers
+  );
+}
+
+test("surface 2 (raw snapshot): the fake logClientRawRequest receives a redacted snapshot only when videoBridgeObserved is true", () => {
+  const rawBody = {
+    model: "openai/gpt-x",
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "look at this video" },
+          {
+            type: "input_video",
+            video_url: "https://example.com/clip.mp4",
+            transcript: { cues: [{ text: SECRET, startSeconds: 0, endSeconds: 2 }] },
+          },
+        ],
+      },
+    ],
+  };
+  const clientRawRequest = { endpoint: "/v1/chat/completions", body: rawBody, headers: {} };
+
+  const observedLogger = fakeReqLogger();
+  callLogClientRawRequestAsChatCoreDoes(observedLogger, clientRawRequest, true);
+  const observedSnapshot = observedLogger.calls[0];
+  assert.ok(
+    !JSON.stringify(observedSnapshot).includes(SECRET),
+    "an observed request must not log the raw transcript"
+  );
+  assert.notEqual(
+    observedSnapshot,
+    rawBody,
+    "the observed path must log a redacted CLONE, not the original reference"
+  );
+  assert.ok(
+    JSON.stringify(rawBody).includes(SECRET),
+    "clientRawRequest.body itself must stay untouched for every other consumer (translation/dispatch)"
+  );
+
+  const nonObservedLogger = fakeReqLogger();
+  callLogClientRawRequestAsChatCoreDoes(nonObservedLogger, clientRawRequest, false);
+  assert.equal(
+    nonObservedLogger.calls[0],
+    rawBody,
+    "the non-observed path must log the exact same object reference — byte-identical, no clone"
   );
 });
