@@ -405,7 +405,7 @@ export type LiveModelsByProviderId = Record<string, Array<{ id: string; name?: s
 /**
  * Models to match against for the model-name filter: the static curated
  * registry PLUS any live/synced catalog for that provider connection (#7250).
- * Aggregator providers (openrouter, kilocode, theoldllm...) declare a
+ * Aggregator providers (openrouter, kilocode, ...) declare a
  * single-entry static placeholder — matching only that entry means a search
  * for any real upstream model name can never match, silently hiding the
  * provider. When the live catalog is empty/unavailable we fall back to the

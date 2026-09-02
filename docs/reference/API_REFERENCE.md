@@ -405,11 +405,11 @@ GET /v1/models?prefix=dual         # both forms (server default)
 GET /v1/models?prefix=canonical    # only the full provider-id prefix
 ```
 
-| Mode        | Emits                                                     | Notes                                                                                                                                                                                                     |
-| ----------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dual`      | `cc/claude-sonnet-4-6` **and** `claude/claude-sonnet-4-6` | **Default.** Both ids route to the same model; kept so client configs that hardcoded either form keep working. Roughly doubles the catalog.                                                               |
-| `alias`     | `cc/claude-sonnet-4-6`                                    | One entry per model. Providers without a distinct alias still emit their entry, so nothing is lost.                                                                                                       |
-| `canonical` | `claude/claude-sonnet-4-6`                                | ⚠️ The canonical row is only emitted when the canonical provider id **differs** from the alias, so providers without a distinct alias emit nothing in this mode. Prefer `alias` for a de-duplicated list. |
+| Mode        | Emits                                                     | Notes                                                                                                                                                                        |
+| ----------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dual`      | `cc/claude-sonnet-4-6` **and** `claude/claude-sonnet-4-6` | **Default.** Both ids route to the same model; kept so client configs that hardcoded either form keep working. Roughly doubles the catalog.                                  |
+| `alias`     | `cc/claude-sonnet-4-6`                                    | One entry per model. Providers without a distinct alias still emit their entry, so nothing is lost.                                                                          |
+| `canonical` | `claude/claude-sonnet-4-6`                                | One entry per model under the full provider-id prefix. Providers without a distinct alias (e.g. `antigravity/…`, `agy/…`) emit their single id here too, so nothing is lost. |
 
 A `dual`-mode mirror can also be recognised without the query parameter: it carries a `parent`
 field pointing at the primary id.
