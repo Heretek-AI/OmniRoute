@@ -430,6 +430,10 @@ export async function executeChatWithBreaker({
   reasoningTransportFallback = "drop",
   sessionAffinityKey = null,
   managedLease = null,
+  // #12150 P1b: additive, optional video-bridge log/Memory shadow — undefined
+  // for every non-video request. Passed straight through to handleChatCore;
+  // see its own destructure default for the shape and consumers.
+  videoBridgeLog = undefined,
 }: ExecuteChatWithBreakerOptions): Promise<ExecuteChatWithBreakerResult> {
   let tlsFingerprintUsed = false;
   const normalizedTrafficType: TrafficType =
@@ -489,6 +493,7 @@ export async function executeChatWithBreaker({
             sessionAffinityKey,
             reasoningTransportFallback,
             managedLease,
+            videoBridgeLog,
             skipResourcePressureGuard: true,
             onCredentialsRefreshed: async (newCreds: any) => {
               await updateProviderCredentials(credentials.connectionId, {

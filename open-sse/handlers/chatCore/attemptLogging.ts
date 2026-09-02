@@ -15,10 +15,75 @@ import { logAuditEvent } from "@/lib/compliance";
 import { emit } from "@/lib/events/eventBus";
 import type { RequestCompletedPayload, RequestFailedPayload } from "@/lib/events/types";
 import { saveCallLog } from "@/lib/usageDb";
+import type { VideoBridgeLogRedactionEntry } from "@/lib/guardrails/videoBridge";
 import { FORMATS } from "../../translator/formats.ts";
 import { takeEarlyKeepaliveBytes } from "../../utils/earlyKeepaliveByteBuffer.ts";
 import { cloneBoundedChatLogPayload, truncateForLog } from "./logTruncation.ts";
 import { attachLogMeta } from "./cacheUsageMeta.ts";
+
+/**
+ * Apply the video-bridge redaction shadow (P1a's `meta.videoBridgeLogRedaction`,
+ * threaded here via `PersistAttemptLogsContext.videoBridgeLogRedaction`) to a
+ * CLONE of `body` before it is serialized into the persisted call log (#12150
+ * surface 1).
+ *
+ * `body` itself is NEVER mutated: by the time an attempt is logged, this same
+ * `body` reference has already been sent upstream (the model path), so
+ * mutating it here would be both unsafe and pointless. Only the containers on
+ * the path to each redacted part are cloned (container array -> message ->
+ * content array -> part); every sibling message/part keeps referencing the
+ * original objects. Returns `body` unchanged (same reference, no allocation)
+ * when there is nothing to redact, so the common non-video path is
+ * byte-identical to before this function existed.
+ */
+export function applyVideoBridgeLogRedaction(
+  body: unknown,
+  redaction: VideoBridgeLogRedactionEntry[] | null | undefined
+): unknown {
+  if (!redaction || redaction.length === 0) return body;
+  if (!body || typeof body !== "object") return body;
+
+  const source = body as Record<string, unknown>;
+  const clone: Record<string, unknown> = { ...source };
+  const clonedContainers = new Map<string, unknown[]>();
+  const clonedMessages = new Map<string, Record<string, unknown>>();
+
+  for (const entry of redaction) {
+    const { container, messageIndex, partIndex, redactedText } = entry;
+    const originalContainer = source[container];
+    if (!Array.isArray(originalContainer)) continue;
+
+    let containerClone = clonedContainers.get(container);
+    if (!containerClone) {
+      containerClone = [...originalContainer];
+      clonedContainers.set(container, containerClone);
+      clone[container] = containerClone;
+    }
+
+    const originalMessage = originalContainer[messageIndex];
+    if (!originalMessage || typeof originalMessage !== "object") continue;
+    const originalContent = (originalMessage as Record<string, unknown>).content;
+    if (!Array.isArray(originalContent)) continue;
+
+    const messageKey = `${container}:${messageIndex}`;
+    let messageClone = clonedMessages.get(messageKey);
+    if (!messageClone) {
+      messageClone = {
+        ...(originalMessage as Record<string, unknown>),
+        content: [...originalContent],
+      };
+      clonedMessages.set(messageKey, messageClone);
+      containerClone[messageIndex] = messageClone;
+    }
+
+    const contentClone = messageClone.content as unknown[];
+    const originalPart = originalContent[partIndex];
+    if (!originalPart || typeof originalPart !== "object") continue;
+    contentClone[partIndex] = { ...(originalPart as Record<string, unknown>), text: redactedText };
+  }
+
+  return clone;
+}
 
 /**
  * Extract the OpenAI Responses API response id this attempt produced, so it
@@ -89,6 +154,15 @@ export type PersistAttemptLogsContext = {
    * explicitly present (never synthesized from skillRequestId) — persisted as call_logs.session_tag
    * for per-session cost attribution. */
   sessionTag?: string | null;
+  /**
+   * #12150 P1b: video-bridge structured-redaction shadow (P1a's
+   * `meta.videoBridgeLogRedaction`), threaded from chat.ts's
+   * `preCallGuardrails.results` down through handleChatCore. When present,
+   * `applyVideoBridgeLogRedaction` swaps each mapped part's text for the
+   * placeholder in the CLONE that gets persisted — `body` itself (the model
+   * path) is never touched. Omitted/empty for every non-video request.
+   */
+  videoBridgeLogRedaction?: VideoBridgeLogRedactionEntry[];
 };
 
 function toConnectionId(value: unknown): string | null {
@@ -204,6 +278,7 @@ export function persistAttemptLogs(args: PersistAttemptLogsArgs, ctx: PersistAtt
     correlationId,
     modelPinned,
     sessionTag,
+    videoBridgeLogRedaction,
   } = ctx;
   const initialConnectionId = toConnectionId(connectionId);
   const finalConnectionId = toConnectionId(credentials?.connectionId) || initialConnectionId;
@@ -287,10 +362,15 @@ export function persistAttemptLogs(args: PersistAttemptLogsArgs, ctx: PersistAtt
     duration: Date.now() - startTime,
     tokens: tokens || {},
     requestBody: cloneBoundedChatLogPayload(
-      attachLogMeta(truncateForLog(body as Record<string, unknown>), {
-        ...accountRotationMeta,
-        claudePromptCache: claudeCacheMeta,
-      })
+      attachLogMeta(
+        truncateForLog(
+          applyVideoBridgeLogRedaction(body, videoBridgeLogRedaction) as Record<string, unknown>
+        ),
+        {
+          ...accountRotationMeta,
+          claudePromptCache: claudeCacheMeta,
+        }
+      )
     ),
     responseBody: cloneBoundedChatLogPayload(
       attachLogMeta(truncateForLog(responseBody as Record<string, unknown>), {

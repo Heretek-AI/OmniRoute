@@ -129,3 +129,30 @@ export function resolveMemoryOwnerId(apiKeyInfo: Record<string, unknown> | null)
   }
   return null;
 }
+
+/**
+ * Pure decision for whether the request-derived text should be extracted into
+ * durable Memory (#12150 P1b, surface 3). Extracted from chatCore.ts's inline
+ * `memoryOwnerId && memorySettings?.enabled && memorySettings.maxTokens > 0`
+ * check (unchanged) plus one new condition: a video-bridge-observed request's
+ * request-derived text is a flattened transcript description, not
+ * user-authored conversation, so it must never be persisted as a "memory
+ * fact". `videoBridgeObserved` is optional and defaults to falsy, so every
+ * existing non-video caller (which never passes it) keeps today's exact
+ * behavior. Governs ONLY the request-derived extractFacts call — the
+ * response-derived one (the model's own reply) is out of scope and
+ * unaffected by this function.
+ */
+export function shouldExtractMemory(input: {
+  enabled: boolean | null | undefined;
+  maxTokens: number | null | undefined;
+  memoryOwnerId: string | null | undefined;
+  videoBridgeObserved?: boolean | null;
+}): boolean {
+  const { enabled, maxTokens, memoryOwnerId, videoBridgeObserved } = input;
+  if (!memoryOwnerId) return false;
+  if (!enabled) return false;
+  if (!(typeof maxTokens === "number" && maxTokens > 0)) return false;
+  if (videoBridgeObserved) return false;
+  return true;
+}
