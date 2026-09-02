@@ -1,6 +1,28 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { handleOcr } from "../../open-sse/handlers/ocr.ts";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-ocr-handler-"));
+const originalDataDir = process.env.DATA_DIR;
+const originalPluginsDir = process.env.OMNIROUTE_PLUGINS_DIR;
+process.env.DATA_DIR = path.join(testRoot, "data");
+process.env.OMNIROUTE_PLUGINS_DIR = path.join(testRoot, "plugins");
+fs.mkdirSync(process.env.DATA_DIR, { recursive: true });
+fs.mkdirSync(process.env.OMNIROUTE_PLUGINS_DIR, { recursive: true });
+
+const core = await import("../../src/lib/db/core.ts");
+const { handleOcr } = await import("../../open-sse/handlers/ocr.ts");
+
+test.after(() => {
+  core.resetDbInstance();
+  if (originalDataDir === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = originalDataDir;
+  if (originalPluginsDir === undefined) delete process.env.OMNIROUTE_PLUGINS_DIR;
+  else process.env.OMNIROUTE_PLUGINS_DIR = originalPluginsDir;
+  fs.rmSync(testRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+});
 
 function fetchStub(
   script: Array<{ status: number; headers?: Record<string, string>; json?: unknown }>
@@ -36,6 +58,86 @@ test("mistral path posts once and returns the upstream body", async () => {
   assert.equal(calls.length, 1);
   const data = await res.json();
   assert.equal(data.pages[0].markdown, "ok");
+});
+
+test("OCR sanitizes structured upstream error bodies", async () => {
+  const opaqueIdentifier = "AbC9xY7pQ2mN8vR4kL6z";
+  const res = await handleOcr({
+    body: {
+      model: "mistral/mistral-ocr-latest",
+      document: { type: "image_url", image_url: "https://x/y.png" },
+    },
+    credentials: { apiKey: "sk" },
+    fetchImpl: async () =>
+      Response.json(
+        {
+          error: {
+            message: "quota metadata at /srv/provider/private.json",
+            type: opaqueIdentifier,
+            code: opaqueIdentifier,
+            reason: opaqueIdentifier,
+            api_key: "credential-value-12345",
+          },
+        },
+        { status: 429 }
+      ),
+    sleepImpl: noSleep,
+  });
+  const payload = (await res.json()) as {
+    error: { message: string; type?: string; code?: string; reason?: string; api_key?: string };
+  };
+
+  assert.equal(res.status, 429);
+  assert.equal(payload.error.api_key, undefined);
+  assert.doesNotMatch(payload.error.message, /srv\/provider/i);
+  assert.doesNotMatch(
+    JSON.stringify(payload),
+    new RegExp(`credential-value-12345|${opaqueIdentifier}`, "i")
+  );
+});
+
+test("OCR canonicalizes blank, plaintext, and mislabeled upstream failures", async () => {
+  const scenarios = [
+    { name: "blank", body: "   ", contentType: "application/json" },
+    {
+      name: "plaintext",
+      body: "access_token=ocr-plain-secret at /srv/private/ocr.txt",
+      contentType: "text/plain",
+    },
+    {
+      name: "mislabeled",
+      body: "<html>api_key=ocr-html-secret at /srv/private/ocr.html</html>",
+      contentType: "application/json",
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const res = await handleOcr({
+      body: {
+        model: "mistral/mistral-ocr-latest",
+        document: { type: "image_url", image_url: "https://x/y.png" },
+      },
+      credentials: { apiKey: "sk" },
+      fetchImpl: async () =>
+        new Response(scenario.body, {
+          status: 502,
+          headers: { "content-type": scenario.contentType },
+        }),
+      sleepImpl: noSleep,
+    });
+    const text = await res.text();
+    const payload = JSON.parse(text) as { error: { message: string } };
+
+    assert.equal(res.status, 502, scenario.name);
+    assert.match(res.headers.get("content-type") || "", /application\/json/i, scenario.name);
+    assert.match(res.headers.get("access-control-allow-methods") || "", /OPTIONS/, scenario.name);
+    assert.equal(typeof payload.error.message, "string", scenario.name);
+    assert.doesNotMatch(
+      text,
+      /ocr-plain-secret|ocr-html-secret|srv\/private|<html>/i,
+      scenario.name
+    );
+  }
 });
 
 test("azure DI path polls Operation-Location until succeeded", async () => {

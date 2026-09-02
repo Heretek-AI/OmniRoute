@@ -15,10 +15,22 @@
  * pass-through here — the test pins the formatting logic, not PII behaviour.
  */
 
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
-import {
+const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-calllogs-format-"));
+const originalDataDir = process.env.DATA_DIR;
+const originalPluginsDir = process.env.OMNIROUTE_PLUGINS_DIR;
+process.env.DATA_DIR = path.join(testRoot, "data");
+process.env.OMNIROUTE_PLUGINS_DIR = path.join(testRoot, "plugins");
+fs.mkdirSync(process.env.DATA_DIR, { recursive: true });
+fs.mkdirSync(process.env.OMNIROUTE_PLUGINS_DIR, { recursive: true });
+
+const core = await import("../../src/lib/db/core.ts");
+const {
   asRecord,
   toNumber,
   toStringOrNull,
@@ -27,7 +39,16 @@ import {
   normalizeDetailState,
   toStoredErrorSummary,
   buildRequestSummary,
-} from "../../src/lib/usage/callLogs/format.ts";
+} = await import("../../src/lib/usage/callLogs/format.ts");
+
+after(() => {
+  core.resetDbInstance();
+  if (originalDataDir === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = originalDataDir;
+  if (originalPluginsDir === undefined) delete process.env.OMNIROUTE_PLUGINS_DIR;
+  else process.env.OMNIROUTE_PLUGINS_DIR = originalPluginsDir;
+  fs.rmSync(testRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+});
 
 describe("callLogs/format — coercers", () => {
   it("asRecord keeps plain objects, rejects arrays/primitives/null", () => {
@@ -95,6 +116,15 @@ describe("callLogs/format — toStoredErrorSummary", () => {
     assert.equal(typeof out, "string");
     assert.ok(out.includes("kaboom"));
     assert.ok(out.includes("message"));
+  });
+  it("removes credentials, filesystem paths, and stack frames before persistence", () => {
+    const out = toStoredErrorSummary(
+      "Provider failed access_token=persisted-secret at /srv/private/provider.json\n" +
+        "    at dispatch (/srv/private/dispatcher.ts:42:7)"
+    );
+
+    assert.equal(typeof out, "string");
+    assert.doesNotMatch(out, /persisted-secret|srv\/private|dispatcher\.ts|\bat dispatch\b/i);
   });
 });
 

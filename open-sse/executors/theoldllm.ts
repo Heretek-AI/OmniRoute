@@ -1,5 +1,6 @@
 import { BaseExecutor, type ExecuteInput } from "./base.ts";
 import type { ProviderCredentials } from "./base.ts";
+import { buildErrorBody, sanitizeErrorMessage } from "../utils/error.ts";
 
 const API_BASE = "https://theoldllm.vercel.app";
 const API_PATH = "/api/chatgpt";
@@ -108,11 +109,11 @@ export function mapModel(model: string): string {
 const TOKEN_SEED = "oldllm-client-2026";
 const UA_PREFIX = CHROME_UA.slice(0, 20); // "Mozilla/5.0 (Windows"
 
-type TheOldLlmProxy = Awaited<
+export type TheOldLlmProxy = Awaited<
   ReturnType<typeof import("../../src/lib/db/proxies").resolveProxyForProvider>
 >;
 
-interface TheOldLlmFetchDependencies {
+export interface TheOldLlmFetchDependencies {
   resolveProxy: () => Promise<TheOldLlmProxy>;
   runWithProxy: <T>(proxy: TheOldLlmProxy, request: () => Promise<T>) => Promise<T>;
   fetch: typeof fetch;
@@ -180,7 +181,8 @@ export async function fetchTheOldLlmWithProviderProxy(
 
 async function directFetch(
   reqBody: Record<string, unknown>,
-  signal?: AbortSignal | null
+  signal?: AbortSignal | null,
+  dependencies?: TheOldLlmFetchDependencies
 ): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => {
@@ -196,7 +198,7 @@ async function directFetch(
     // a connection-scoped proxy context for them. Resolve the provider/global
     // assignment explicitly; otherwise The Old LLM always leaks out through the
     // VPS address and Vercel's bot protection denies every model.
-    return await fetchTheOldLlmWithProviderProxy(reqBody, controller.signal);
+    return await fetchTheOldLlmWithProviderProxy(reqBody, controller.signal, dependencies);
   } finally {
     clearTimeout(timer);
     if (onSignal) signal?.removeEventListener("abort", onSignal);
@@ -252,21 +254,33 @@ function buildChatCompletion(content: string, model: string): string {
 }
 
 function buildErrorResponse(status: number, body: string): string {
-  let detail = body;
+  let upstreamDetails: unknown;
   for (const line of body.split("\n")) {
     if (line.startsWith("data: ") && line !== "data: [DONE]") {
       try {
         const p = JSON.parse(line.slice(6));
         if (p.error) {
-          detail = JSON.stringify(p.error);
+          upstreamDetails = p.error;
           break;
         }
       } catch {}
     }
   }
-  return JSON.stringify({
-    error: { message: detail, type: "upstream_error", code: `HTTP_${status}` },
-  });
+
+  if (upstreamDetails === undefined) {
+    try {
+      upstreamDetails = JSON.parse(body);
+    } catch {
+      // Opaque HTML/plaintext bodies must not cross the public boundary.
+    }
+  }
+
+  return JSON.stringify(
+    buildErrorBody(status, `The Old LLM request failed (${status})`, upstreamDetails, {
+      type: "upstream_error",
+      code: `HTTP_${status}`,
+    })
+  );
 }
 
 function buildVercelMitigationError(): string {
@@ -294,14 +308,15 @@ function buildProxyUnavailableError(): string {
 async function fetchUpstreamWithRetry(
   reqBody: Record<string, unknown>,
   signal: AbortSignal | null | undefined,
-  log: ExecuteInput["log"]
+  log: ExecuteInput["log"],
+  dependencies?: TheOldLlmFetchDependencies
 ): Promise<{ response: Response; body: string; vercelMitigated: boolean }> {
-  let response = await directFetch(reqBody, signal);
+  let response = await directFetch(reqBody, signal, dependencies);
   let body = await response.text();
   let vercelMitigated = isVercelMitigationResponse(response, body);
   if (!vercelMitigated && isTokenRejected(response.status, body)) {
     log?.warn?.("THEOLDLLM", `Token rejected (${response.status}), retrying with fresh token…`);
-    response = await directFetch(reqBody, signal);
+    response = await directFetch(reqBody, signal, dependencies);
     body = await response.text();
     vercelMitigated = isVercelMitigationResponse(response, body);
   }
@@ -311,7 +326,7 @@ async function fetchUpstreamWithRetry(
 // ── Executor ──────────────────────────────────────────────────────────────
 
 export class TheOldLlmExecutor extends BaseExecutor {
-  constructor() {
+  constructor(private readonly fetchDependencies?: TheOldLlmFetchDependencies) {
     super("theoldllm", { format: "openai" });
   }
 
@@ -355,7 +370,8 @@ export class TheOldLlmExecutor extends BaseExecutor {
           messages: [{ role: "user", content: "ping" }],
           stream: false,
         },
-        _signal
+        _signal,
+        this.fetchDependencies
       );
       const body = await resp.text();
       if (!resp.ok && isVercelMitigationResponse(resp, body)) {
@@ -408,7 +424,7 @@ export class TheOldLlmExecutor extends BaseExecutor {
         response: upstream,
         body: finalBody,
         vercelMitigated,
-      } = await fetchUpstreamWithRetry(reqBody, signal, log);
+      } = await fetchUpstreamWithRetry(reqBody, signal, log, this.fetchDependencies);
 
       if (upstream.status === 200 && finalBody) {
         const payload = stream ? finalBody : buildChatCompletion(parseSseContent(finalBody), model);
@@ -438,13 +454,16 @@ export class TheOldLlmExecutor extends BaseExecutor {
       );
     } catch (err) {
       const proxyUnavailable = err instanceof TheOldLlmProxyUnavailableError;
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = sanitizeErrorMessage(err) || "The Old LLM request failed";
       log?.error?.("THEOLDLLM", `Executor error: ${msg}`);
       const errorPayload = proxyUnavailable
         ? buildProxyUnavailableError()
-        : JSON.stringify({
-            error: { message: msg, type: "upstream_error", code: "EXECUTOR_ERROR" },
-          });
+        : JSON.stringify(
+            buildErrorBody(502, "The Old LLM request failed", undefined, {
+              type: "upstream_error",
+              code: "EXECUTOR_ERROR",
+            })
+          );
       return this.executionResult(
         input,
         new Response(encoder.encode(errorPayload), {

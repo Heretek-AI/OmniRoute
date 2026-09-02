@@ -9,6 +9,7 @@
 
 import { getDbInstance } from "../db/core";
 import { protectPayloadForLog } from "../logPayloads";
+import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/errorSanitization.ts";
 import {
   resolveOrphanedUsageAccountIdentity,
   resolveUsageAccountIdentity,
@@ -128,7 +129,7 @@ function normalizePendingMetadata(metadata?: PendingRequestMetadata): PendingReq
     normalized.status = Number.isFinite(status) ? status : null;
   }
   if (metadata.error !== undefined) {
-    normalized.error = toStringOrNull(metadata.error) || null;
+    normalized.error = sanitizeErrorMessage(toStringOrNull(metadata.error)) || null;
   }
   if (metadata.errorCode !== undefined) {
     normalized.errorCode = toStringOrNull(metadata.errorCode) || null;

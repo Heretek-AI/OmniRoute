@@ -4,8 +4,15 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-chatcore-translation-"));
+const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-chatcore-translation-"));
+const TEST_DATA_DIR = path.join(TEST_ROOT, "data");
+const TEST_PLUGINS_DIR = path.join(TEST_ROOT, "plugins");
+const ORIGINAL_DATA_DIR = process.env.DATA_DIR;
+const ORIGINAL_PLUGINS_DIR = process.env.OMNIROUTE_PLUGINS_DIR;
+fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+fs.mkdirSync(TEST_PLUGINS_DIR, { recursive: true });
 process.env.DATA_DIR = TEST_DATA_DIR;
+process.env.OMNIROUTE_PLUGINS_DIR = TEST_PLUGINS_DIR;
 const core = await import("../../src/lib/db/core.ts");
 const providersDb = await import("../../src/lib/db/providers.ts");
 const settingsDb = await import("../../src/lib/db/settings.ts");
@@ -448,7 +455,11 @@ test.after(async () => {
   resetAccountSemaphores();
   await flushAsyncSideEffects();
   await resetStorage();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  if (ORIGINAL_DATA_DIR === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = ORIGINAL_DATA_DIR;
+  if (ORIGINAL_PLUGINS_DIR === undefined) delete process.env.OMNIROUTE_PLUGINS_DIR;
+  else process.env.OMNIROUTE_PLUGINS_DIR = ORIGINAL_PLUGINS_DIR;
+  fs.rmSync(TEST_ROOT, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 test("chatCore times out upstream execution before provider response headers", async () => {
   // This test asserts pendingDetail.providerRequest — only attached when the
@@ -1964,9 +1975,12 @@ test("chatCore surfaces typed translation errors with the declared error type", 
     FORMATS.OPENAI_RESPONSES,
     FORMATS.OPENAI,
     () => {
-      const error = new Error("typed translator failure");
+      const error = new Error(
+        "typed translator failure access_token=translation-secret at /srv/private/translator.ts\n" +
+          "    at translate (/srv/private/translator.ts:41:8)"
+      );
       error.statusCode = 422;
-      error.errorType = "unsupported_feature";
+      error.errorType = "unsupported_feature access_token=type-secret /srv/private/type.ts";
       throw error;
     },
     null
@@ -1985,9 +1999,16 @@ test("chatCore surfaces typed translation errors with the declared error type", 
   assert.equal(result.success, false);
   assert.equal(result.status, 422);
 
-  const payload = (await result.response.json()) as any;
-  assert.equal(payload.error.type, "unsupported_feature");
-  assert.equal(payload.error.code, "unsupported_feature");
+  const payload = (await result.response.json()) as {
+    error: { message: string; type: string; code: string };
+  };
+  assert.equal(payload.error.type, "invalid_request_error");
+  assert.equal(payload.error.code, "");
+  assert.match(payload.error.message, /typed translator failure/);
+  assert.doesNotMatch(
+    JSON.stringify({ payload, internalError: result.error }),
+    /translation-secret|type-secret|srv\/private|translator\.ts|type\.ts|\bat translate\b/i
+  );
 });
 test("chatCore returns 500 when translation throws a generic error", async () => {
   register(
@@ -2602,6 +2623,44 @@ test("chatCore 429 lets account fallback apply the configured resilience cooldow
   assert.equal(fallback.cooldownMs, 1000);
   assert.equal((afterFallback as any).testStatus, "unavailable");
   assert.ok(cooldownRemaining > 0 && cooldownRemaining <= 2_000);
+});
+test("chatCore sanitizes nonterminal provider lastError without changing raw classification", async () => {
+  const hostile =
+    "invalid credential access_token=chatcore-last-error-secret at /srv/private/chatcore.ts\n" +
+    "    at request (/srv/private/chatcore.ts:14:3)";
+  const connection = await providersDb.createProviderConnection({
+    provider: "openai",
+    authType: "apikey",
+    name: "chatCore last-error boundary",
+    apiKey: "chatcore-last-error-test-key",
+    isActive: true,
+    testStatus: "active",
+  });
+
+  const { result } = await invokeChatCore({
+    provider: "openai",
+    model: "gpt-4o-mini",
+    connectionId: connection.id,
+    body: {
+      model: "gpt-4o-mini",
+      stream: false,
+      messages: [{ role: "user", content: "trigger nonterminal auth failure" }],
+    },
+    responseFactory() {
+      return Response.json({ error: { message: hostile } }, { status: 401 });
+    },
+  });
+
+  const updated = await providersDb.getProviderConnectionById(connection.id);
+  const publicBody = await result.response.json();
+  const boundaries = JSON.stringify({ lastError: updated.lastError, publicBody });
+
+  assert.equal(result.status, 401);
+  assert.match(String(updated.lastError), /invalid credential/i);
+  assert.doesNotMatch(
+    boundaries,
+    /chatcore-last-error-secret|srv\/private|chatcore\.ts|\bat request\b/i
+  );
 });
 test("chatCore does not substitute an OpenAI model after model-unavailable", async () => {
   const { calls, result } = await invokeChatCore({

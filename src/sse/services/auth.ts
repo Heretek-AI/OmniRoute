@@ -68,6 +68,7 @@ import {
 } from "@omniroute/open-sse/services/accountFallback.ts";
 import { isLocalProvider } from "@omniroute/open-sse/config/providerRegistry.ts";
 import { COOLDOWN_MS, RateLimitReason } from "@omniroute/open-sse/config/constants.ts";
+import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/errorSanitization.ts";
 import {
   honorsRuleLockScope,
   isEgressBucketedLockScope,
@@ -2716,14 +2717,14 @@ export async function markAccountUnavailable(
     // the opt-in setting probeCanDisable restores the historical behavior.
     if (await shouldIsolateProbeFailures()) {
       await updateProviderConnection(connectionId, {
-        // lastError kept RAW (full text) — maximal probe visibility; the
-        // divergence vs the normal path's slice(0,100) is intentional.
+        // Keep safe provider wording for probe visibility, but project it at
+        // this persistence seam after classification has consumed the raw text.
         // backoffLevel is deliberately NOT written: a positive backoff
         // triggers the selection-time auto-decay (resetConnectionBackoff,
         // auth.ts getProviderCredentials) which wipes lastError back to
         // NULL on the next attempt — silently destroying the probe record.
         // The backoff is also routing state a probe must not touch (#9817).
-        lastError: errorText,
+        lastError: sanitizeErrorMessage(errorText) || "Provider request failed",
         lastErrorType: fallbackResult.reason || null,
         errorCode: status,
         lastErrorAt: new Date().toISOString(),
@@ -3139,7 +3140,8 @@ export async function markAccountUnavailable(
       return { shouldFallback: true, cooldownMs: lockout.cooldownMs };
     }
 
-    const errorMsg = describeUpstreamFailure(errorText);
+    const errorMsg =
+      sanitizeErrorMessage(describeUpstreamFailure(errorText)) || "Provider request failed";
 
     // T09: Codex per-scope lockout (do not block the whole account globally).
     if (

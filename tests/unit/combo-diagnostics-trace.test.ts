@@ -8,10 +8,31 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
-const { errorResponseWithComboDiagnostics, sanitizeComboDiagnostics } = await import(
-  "../../open-sse/utils/error.ts"
-);
+const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-combo-diagnostics-"));
+const originalDataDir = process.env.DATA_DIR;
+const originalPluginsDir = process.env.OMNIROUTE_PLUGINS_DIR;
+process.env.DATA_DIR = path.join(testRoot, "data");
+process.env.OMNIROUTE_PLUGINS_DIR = path.join(testRoot, "plugins");
+fs.mkdirSync(process.env.DATA_DIR, { recursive: true });
+fs.mkdirSync(process.env.OMNIROUTE_PLUGINS_DIR, { recursive: true });
+
+const core = await import("../../src/lib/db/core.ts");
+const { errorResponseWithComboDiagnostics, sanitizeComboDiagnostics } =
+  await import("../../open-sse/utils/error.ts");
+const { buildRecoveryHint } = await import("../../open-sse/services/combo/pinRecovery.ts");
+
+test.after(() => {
+  core.resetDbInstance();
+  if (originalDataDir === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = originalDataDir;
+  if (originalPluginsDir === undefined) delete process.env.OMNIROUTE_PLUGINS_DIR;
+  else process.env.OMNIROUTE_PLUGINS_DIR = originalPluginsDir;
+  fs.rmSync(testRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+});
 
 test("combo diagnostics: headers + body carry the sanitized trace (code override preserved)", async () => {
   const res = errorResponseWithComboDiagnostics(
@@ -89,7 +110,9 @@ test("combo diagnostics: terminalReason with a non-Latin1 char (em dash) must no
       {
         poolSize: 4,
         attempted: 1,
-        excluded: [{ provider: "deepseek", model: "deepseek-v4-flash-free", reason: "quality — bad" }],
+        excluded: [
+          { provider: "deepseek", model: "deepseek-v4-flash-free", reason: "quality — bad" },
+        ],
         attemptOrder: [{ provider: "deepseek", model: "deepseek-v4-flash-free" }],
         terminalReason,
       }
@@ -112,8 +135,43 @@ test("combo diagnostics: JSON body keeps the original non-Latin1 text even thoug
     }
   );
   // Header value must be a valid Latin1 ByteString — em dash (U+2014) replaced.
-  assert.equal(res.headers.get("x-omniroute-combo-terminal-reason"), terminalReason.replace("—", "?"));
+  assert.equal(
+    res.headers.get("x-omniroute-combo-terminal-reason"),
+    terminalReason.replace("—", "?")
+  );
   const body = await res.json();
   // JSON body keeps the original, readable (unsanitized) em dash.
   assert.equal(body.diagnostics.terminalReason, terminalReason);
+});
+
+test("combo diagnostics preserve every canonical recovery hint up to the existing cap", async () => {
+  const reasons = [
+    "reasoning_budget_exhausted",
+    "max_attempts_exceeded",
+    "all_accounts_inactive",
+    "quota_exhausted",
+    "all_models_failed",
+    "no_executable_targets",
+    "context_requirements_exhausted",
+    "all_targets_skipped",
+    "unknown_reason",
+  ];
+
+  for (const reason of reasons) {
+    const recovery = buildRecoveryHint(reason, 30);
+    const response = errorResponseWithComboDiagnostics(503, "combo failed", {
+      poolSize: 1,
+      attempted: 1,
+      excluded: [],
+      attemptOrder: [],
+      terminalReason: reason,
+      recovery,
+    });
+    const body = (await response.json()) as {
+      recovery_hint?: { action: string; next_step: string };
+    };
+
+    assert.equal(body.recovery_hint?.action, recovery.action, reason);
+    assert.equal(body.recovery_hint?.next_step, recovery.next_step.slice(0, 200), reason);
+  }
 });

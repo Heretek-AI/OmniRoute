@@ -50,6 +50,7 @@ import { parseTextualToolCallCandidate, isValidToolCallHeaderPrefix } from "./te
 import {
   formatTranslatedStreamError,
   normalizeStreamFailurePayload,
+  projectStreamFailureEvent,
   type StreamFailurePayload,
 } from "./streamErrorFormat.ts";
 import { recordToolLatency } from "../services/toolLatencyTracker.ts";
@@ -1172,6 +1173,92 @@ export function createSSEStream(options: StreamOptions = {}) {
     }
   };
 
+  const abortStreamFailure = (
+    controller: TransformStreamDefaultController<Uint8Array>,
+    failurePayload: StreamFailurePayload,
+    publicMessage: string,
+    options: { notifyComplete?: boolean } = {}
+  ): void => {
+    let failureHandled = false;
+    timing.markInterrupted();
+    if (onFailure) {
+      try {
+        // Keep the raw provider wording internal for quota/reset classification. The
+        // persistence seam sanitizes it after classification; public output uses the
+        // separately projected payload and message.
+        failureHandled = onFailure(failurePayload) === true;
+      } catch (e) {
+        console.debug(`[STREAM] onFailure callback error:`, e);
+      }
+    }
+    let publicErrorMessage = publicMessage || "Upstream failure";
+    if (options.notifyComplete && onComplete) {
+      const errorBody = buildErrorBody(failurePayload.status, failurePayload.message);
+      publicErrorMessage = errorBody.error.message;
+      try {
+        onComplete({
+          status: failurePayload.status,
+          usage: state?.usage,
+          responseBody: errorBody,
+          ttft: timing.ttftMs(),
+          itlMs: timing.avgItlMs(),
+          interrupted: timing.interrupted,
+          error: publicErrorMessage,
+          errorCode: failurePayload.code,
+          providerPayload: providerPayloadCollector.build(providerPayloadCollector.getSummary(), {
+            includeEvents: false,
+          }),
+          clientPayload: clientPayloadCollector.build(errorBody, { includeEvents: false }),
+        });
+        failureHandled = true;
+      } catch (e) {
+        console.debug(
+          `[STREAM] onComplete callback error in error path (${model || "unknown"}):`,
+          e
+        );
+      }
+    }
+    clearIdleTimer();
+    if (!failureHandled) {
+      clearPendingRequestFromStream();
+    }
+    controller.error(markPendingRequestCleared(new Error(publicErrorMessage)));
+  };
+
+  const emitTranslatedFailureAndAbort = (
+    controller: TransformStreamDefaultController<Uint8Array>,
+    payload: unknown
+  ): boolean => {
+    const record =
+      payload && typeof payload === "object" && !Array.isArray(payload)
+        ? (payload as JsonRecord)
+        : {};
+    const projectedFailure = projectStreamFailureEvent(record);
+    if (!projectedFailure && !record.error) return false;
+
+    providerPayloadCollector.push(projectedFailure?.publicPayload ?? record);
+
+    const internalFailure = projectedFailure?.internalFailure ??
+      normalizeStreamFailurePayload(record) ?? {
+        status: 502,
+        message: "Upstream failure",
+        code: "stream_error",
+        type: "server_error",
+      };
+    const output = formatTranslatedStreamError(record, sourceFormat);
+    reqLogger?.appendConvertedChunk?.(output);
+    forward(controller, encoder.encode(output));
+    upstreamErrorForwarded = true;
+    doneSent = true;
+    abortStreamFailure(
+      controller,
+      internalFailure,
+      projectedFailure?.publicMessage || "Upstream failure",
+      { notifyComplete: true }
+    );
+    return true;
+  };
+
   return new TransformStream(
     {
       start(controller) {
@@ -1236,6 +1323,7 @@ export function createSSEStream(options: StreamOptions = {}) {
             let injectedUsage = false;
             let clientPayload: unknown = null;
             let failurePayload: StreamFailurePayload | null = null;
+            let publicFailureMessage: string | null = null;
 
             if (skipPassthroughEvent) {
               if (!trimmed) {
@@ -1323,6 +1411,14 @@ export function createSSEStream(options: StreamOptions = {}) {
             if (trimmed.startsWith("data:") && trimmed.slice(5).trim() !== "[DONE]") {
               try {
                 let parsed = parsedPassthroughData ?? JSON.parse(trimmed.slice(5).trim());
+                const projectedFailure = projectStreamFailureEvent(parsed);
+                if (projectedFailure) {
+                  parsed = projectedFailure.publicPayload;
+                  failurePayload = projectedFailure.internalFailure;
+                  publicFailureMessage = projectedFailure.publicMessage;
+                  output = `data: ${JSON.stringify(parsed)}\n\n`;
+                  injectedUsage = true;
+                }
 
                 // Some upstream Responses-compatible providers leak an initial Chat Completions
                 // bootstrap chunk (assistant role + empty content) before emitting proper
@@ -1479,9 +1575,6 @@ export function createSSEStream(options: StreamOptions = {}) {
                       );
                     }
                   }
-                  if (parsed.type === "response.failed") {
-                    failurePayload = normalizeStreamFailurePayload(parsed);
-                  }
                   if (
                     parsed.type === "response.reasoning_summary_text.delta" ||
                     parsed.type === "response.reasoning_summary_text.done" ||
@@ -1637,10 +1730,7 @@ export function createSSEStream(options: StreamOptions = {}) {
                         isResponsesCommentaryMessageItem
                       ).items
                     : passthroughResponsesOutputItems;
-                  const backfilled = backfillResponsesCompletedOutput(
-                    parsed,
-                    backfillCandidates
-                  );
+                  const backfilled = backfillResponsesCompletedOutput(parsed, backfillCandidates);
                   const usageNormalized = normalizeUsage(parsed);
                   if (
                     stripped ||
@@ -1760,7 +1850,11 @@ export function createSSEStream(options: StreamOptions = {}) {
                       ) {
                         const pt = emptyChoicesUsage.prompt_tokens ?? 0;
                         if (pt === 0) {
-                          const estimated = estimateUsage(body, totalContentLength, sourceFormat || FORMATS.OPENAI);
+                          const estimated = estimateUsage(
+                            body,
+                            totalContentLength,
+                            sourceFormat || FORMATS.OPENAI
+                          );
                           if (estimated?.prompt_tokens > 0) {
                             emptyChoicesUsage.prompt_tokens = estimated.prompt_tokens;
                             emptyChoicesUsage.total_tokens =
@@ -1804,20 +1898,22 @@ export function createSSEStream(options: StreamOptions = {}) {
                   const rawDelta = parsed.choices?.[0]?.delta;
                   const hadReasoningAlias = hasUnsupportedReasoningSignal(rawDelta);
 
-                  parsed = sanitizeStreamingChunk(parsed);
-                  if (
-                    parsed &&
-                    typeof parsed === "object" &&
-                    !Array.isArray(parsed) &&
-                    (parsed as Record<string, unknown>)[OMIT_STREAMING_CHUNK_MARKER] === true
-                  ) {
-                    continue;
+                  if (!projectedFailure) {
+                    parsed = sanitizeStreamingChunk(parsed);
+                    if (
+                      parsed &&
+                      typeof parsed === "object" &&
+                      !Array.isArray(parsed) &&
+                      (parsed as Record<string, unknown>)[OMIT_STREAMING_CHUNK_MARKER] === true
+                    ) {
+                      continue;
+                    }
                   }
 
                   const restoredOpenAIToolName = restoreOpenAIToolNames(parsed, toolNameMap);
                   const idFixed = hadNonStringTopLevelId ? false : fixInvalidId(parsed);
 
-                  if (!hasValuableContent(parsed, FORMATS.OPENAI)) {
+                  if (!projectedFailure && !hasValuableContent(parsed, FORMATS.OPENAI)) {
                     continue;
                   }
 
@@ -2046,20 +2142,10 @@ export function createSSEStream(options: StreamOptions = {}) {
             reqLogger?.appendConvertedChunk?.(output);
             forward(controller, encoder.encode(output));
             if (failurePayload) {
-              let failureHandled = false;
-              if (onFailure) {
-                try {
-                  failureHandled = onFailure(failurePayload) === true;
-                } catch (e) {
-                  console.debug(`[STREAM] onFailure callback error:`, e);
-                }
-              }
-              clearIdleTimer();
-              if (!failureHandled) {
-                clearPendingRequestFromStream();
-              }
-              controller.error(
-                markPendingRequestCleared(new Error(failurePayload.message || "Upstream failure"))
+              abortStreamFailure(
+                controller,
+                failurePayload,
+                publicFailureMessage || "Upstream failure"
               );
               return;
             }
@@ -2081,14 +2167,7 @@ export function createSSEStream(options: StreamOptions = {}) {
 
           if (upstreamErrorForwarded) continue;
 
-          if (parsed.error) {
-            const output = formatTranslatedStreamError(parsed, sourceFormat);
-            reqLogger?.appendConvertedChunk?.(output);
-            forward(controller, encoder.encode(output));
-            upstreamErrorForwarded = true;
-            doneSent = true;
-            continue;
-          }
+          if (emitTranslatedFailureAndAbort(controller, parsed)) return;
 
           // #5786 — drop replayed Responses-API events (identical/lower sequence_number
           // re-sent on an upstream reconnect) so their deltas are not glued twice into
@@ -2350,6 +2429,8 @@ export function createSSEStream(options: StreamOptions = {}) {
                 ]) as JsonRecord,
               restoreOpenAIToolNames: (parsed: JsonRecord) =>
                 restoreOpenAIToolNames(parsed, toolNameMap),
+              abortFailure: (failure: StreamFailurePayload, publicMessage: string) =>
+                abortStreamFailure(controller, failure, publicMessage),
             };
 
             for (const line of normalizedTailLines) {
@@ -2363,12 +2444,18 @@ export function createSSEStream(options: StreamOptions = {}) {
               clearPendingPassthroughEvent();
             } else if (buffer) {
               let output = buffer;
+              let bufferedProjectedFailure: ReturnType<typeof projectStreamFailureEvent> = null;
               if (buffer.startsWith("data:") && !buffer.startsWith("data: ")) {
                 output = "data: " + buffer.slice(5);
               }
-              const bufferedPayload = parseSSELine(bufferedLine);
+              let bufferedPayload = parseSSELine(bufferedLine);
               if (bufferedPayload) {
                 providerPayloadCollector.push(bufferedPayload);
+                bufferedProjectedFailure = projectStreamFailureEvent(bufferedPayload);
+                if (bufferedProjectedFailure) {
+                  bufferedPayload = bufferedProjectedFailure.publicPayload;
+                  output = `data: ${JSON.stringify(bufferedPayload)}\n\n`;
+                }
                 if (sanitizeUsagePayloadForRequest(bufferedPayload, body, clientResponseFormat))
                   output = `data: ${JSON.stringify(bufferedPayload)}\n\n`;
                 if (
@@ -2417,6 +2504,14 @@ export function createSSEStream(options: StreamOptions = {}) {
               }
               reqLogger?.appendConvertedChunk?.(output);
               forward(controller, encoder.encode(output));
+              if (bufferedProjectedFailure) {
+                abortStreamFailure(
+                  controller,
+                  bufferedProjectedFailure.internalFailure,
+                  bufferedProjectedFailure.publicMessage
+                );
+                return;
+              }
             }
 
             if (shouldInjectClaudeEmptyResponseOnFlush(claudeEmptyResponseLifecycle)) {
@@ -2519,11 +2614,7 @@ export function createSSEStream(options: StreamOptions = {}) {
               // [DONE], so metered clients still see token counts. When the
               // upstream DID send usage (trailing or in-band), it was forwarded
               // already and passthroughForwardedUsage guards this off.
-              if (
-                shouldEmitDoneTerminator &&
-                !passthroughForwardedUsage &&
-                hasValidUsage(usage)
-              ) {
+              if (shouldEmitDoneTerminator && !passthroughForwardedUsage && hasValidUsage(usage)) {
                 const usageOnlyChunk = {
                   id: passthroughLastChatId ?? passthroughResponsesId ?? `chatcmpl-${Date.now()}`,
                   object: "chat.completion.chunk",
@@ -2671,6 +2762,7 @@ export function createSSEStream(options: StreamOptions = {}) {
           if (buffer.trim()) {
             const parsed = parseSSELine(buffer.trim());
             if (parsed && !parsed.done) {
+              if (emitTranslatedFailureAndAbort(controller, parsed)) return;
               providerPayloadCollector.push(parsed);
               // Extract usage from remaining buffer — if the usage-bearing event
               // (e.g. response.completed) is the last SSE line, it ends up here
@@ -2735,58 +2827,9 @@ export function createSSEStream(options: StreamOptions = {}) {
               // terminal signal for the client.
             }
 
-            let failureHandled = false;
-            if (onFailure) {
-              try {
-                timing.markInterrupted();
-                failureHandled =
-                  onFailure({
-                    status: err.status,
-                    message: err.message,
-                    code: err.code,
-                    type: err.type,
-                  }) === true;
-              } catch (e) {
-                console.debug(`[STREAM] onFailure callback error (${model || "unknown"}):`, e);
-              }
-            }
-
             const errorBody = buildErrorBody(err.status, err.message);
-            if (onComplete) {
-              try {
-                onComplete({
-                  status: err.status,
-                  usage: state?.usage,
-                  responseBody: errorBody,
-                  ttft: timing.ttftMs(),
-                  itlMs: timing.avgItlMs(),
-                  interrupted: timing.interrupted,
-                  error: err.message,
-                  errorCode: err.code,
-                  providerPayload: providerPayloadCollector.build(
-                    providerPayloadCollector.getSummary(),
-                    { includeEvents: false }
-                  ),
-                  clientPayload: clientPayloadCollector.build(errorBody, {
-                    includeEvents: false,
-                  }),
-                });
-                failureHandled = true;
-              } catch (e) {
-                console.debug(
-                  `[STREAM] onComplete callback error in error path (${model || "unknown"}):`,
-                  e
-                );
-              }
-            }
-
-            clearIdleTimer();
-            if (!failureHandled) {
-              clearPendingRequestFromStream();
-            }
-            controller.error(
-              markPendingRequestCleared(new Error(err.message || "Upstream failure"))
-            );
+            const publicErrorMessage = errorBody.error.message;
+            abortStreamFailure(controller, err, publicErrorMessage, { notifyComplete: true });
             return;
           }
 

@@ -5,7 +5,10 @@ import {
 import { injectMemoryAndSkills } from "./chatCore/memorySkillsInjection.ts";
 import { resolveChatCoreRequestSetup } from "./chatCore/requestSetup.ts";
 import { normalizeOpenAICompatibleTools } from "./chatCore/openAICompatibleTools.ts";
-import { buildFailureUsageRecord } from "./chatCore/failureUsage.ts";
+import {
+  buildFailureUsageRecord,
+  projectFailureUsageErrorCode,
+} from "./chatCore/failureUsage.ts";
 import { estimateFinalInputTokens } from "./chatCore/contextEstimation.ts";
 import {
   extractSystemRoleMessages,
@@ -77,7 +80,11 @@ import {
   isStripReasoningRequested,
 } from "./chatCore/headers.ts";
 import { markCodexScopeRateLimited } from "./chatCore/codexFailover.ts";
-import { getCodexClientSessionId, isCodexOriginatedHeaders, isClaudeCodeOriginatedHeaders } from "../config/codexIdentity.ts";
+import {
+  getCodexClientSessionId,
+  isCodexOriginatedHeaders,
+  isClaudeCodeOriginatedHeaders,
+} from "../config/codexIdentity.ts";
 import {
   noteCodexTurnStateProvenance,
   readCodexTurnStateHeader,
@@ -2485,23 +2492,24 @@ export async function handleChatCore({
         : HTTP_STATUS.SERVER_ERROR;
     const message = error?.message || "Invalid request";
     const errorType = typeof error?.errorType === "string" ? error.errorType : null;
+    const errorBody = buildErrorBody(
+      statusCode,
+      message,
+      undefined,
+      errorType ? { type: errorType, code: errorType } : undefined
+    );
+    const safeMessage = errorBody.error.message;
 
-    log?.warn?.("TRANSLATE", `Request translation failed: ${message}`);
+    log?.warn?.("TRANSLATE", `Request translation failed: ${safeMessage}`);
 
     if (errorType) {
       trackPendingRequest(model, provider, connectionId, false);
       return {
         success: false,
         status: statusCode,
-        error: message,
+        error: safeMessage,
         response: new Response(
-          JSON.stringify({
-            error: {
-              message,
-              type: errorType,
-              code: errorType,
-            },
-          }),
+          JSON.stringify(errorBody),
           {
             status: statusCode,
             headers: {
@@ -2513,7 +2521,7 @@ export async function handleChatCore({
     }
 
     trackPendingRequest(model, provider, connectionId, false);
-    return createErrorResult(statusCode, message);
+    return createErrorResult(statusCode, safeMessage);
   }
 
   // The latest OmniGlyph release has protocol-native OpenAI transforms. Run
@@ -3888,10 +3896,14 @@ export async function handleChatCore({
       streamController.handleError(error);
       return createErrorResult(499, "Request aborted");
     }
-    persistFailureUsage(
-      failureStatus,
-      upstreamErrorCode || (error instanceof Error && error.name ? error.name : "upstream_error")
-    );
+    const persistentErrorCode = projectFailureUsageErrorCode({
+      statusCode: failureStatus,
+      message: failureMessage,
+      errorCode:
+        upstreamErrorCode || (error instanceof Error && error.name ? error.name : "upstream_error"),
+      errorType: upstreamErrorType,
+    });
+    persistFailureUsage(failureStatus, persistentErrorCode);
     console.log(`${COLORS.red}[ERROR] ${failureMessage}${COLORS.reset}`);
     if (stream && upstreamErrorCode) {
       const result = createStreamingErrorResult(
@@ -4217,6 +4229,9 @@ export async function handleChatCore({
         `${decision.kind} (model remaining: ${decision.snapshot.modelRemaining ?? "unknown"}, total remaining: ${decision.snapshot.totalRemaining ?? "unknown"})`
       );
     }
+    // Classifiers and recovery paths above consume the raw provider wording.
+    // Project a separate value only at persistent connection-state boundaries.
+    const persistentMessage = sanitizeErrorMessage(message) || "Provider request failed";
     const errorConnectionId = getCurrentConnectionId();
     if (errorConnectionId && errorType) {
       try {
@@ -4228,7 +4243,7 @@ export async function handleChatCore({
               {
                 testStatus: "banned",
                 isActive: false,
-                lastError: message,
+                lastError: persistentMessage,
                 lastErrorType: errorType,
                 errorCode: String(statusCode),
               },
@@ -4259,7 +4274,7 @@ export async function handleChatCore({
           ) {
             await updateProviderConnection(errorConnectionId, {
               lastErrorType: errorType,
-              lastError: message,
+              lastError: persistentMessage,
               errorCode: statusCode,
             });
             console.warn(
@@ -4272,7 +4287,7 @@ export async function handleChatCore({
               {
                 testStatus: "deactivated",
                 isActive: false,
-                lastError: message,
+                lastError: persistentMessage,
                 lastErrorType: errorType,
                 errorCode: String(statusCode),
               },
@@ -4296,7 +4311,7 @@ export async function handleChatCore({
                 errorConnectionId,
                 {
                   testStatus: "credits_exhausted",
-                  lastError: message,
+                  lastError: persistentMessage,
                   lastErrorType: errorType,
                   errorCode: String(statusCode),
                 },
@@ -4382,7 +4397,7 @@ export async function handleChatCore({
                   rateLimitedUntil: kimiRateLimitResetAt,
                   backoffLevel: 0,
                   lastErrorType: PROVIDER_ERROR_TYPES.RATE_LIMITED,
-                  lastError: message,
+                  lastError: persistentMessage,
                   errorCode: statusCode,
                 });
                 console.warn(
@@ -4411,7 +4426,7 @@ export async function handleChatCore({
                   errorConnectionId,
                   {
                     testStatus: "credits_exhausted",
-                    lastError: message,
+                    lastError: persistentMessage,
                     lastErrorType: errorType,
                     errorCode: String(statusCode),
                   },
@@ -4427,14 +4442,14 @@ export async function handleChatCore({
           // Normal 401 (token/session auth issue): keep account active for refresh/re-auth.
           await updateProviderConnection(errorConnectionId, {
             lastErrorType: errorType,
-            lastError: message,
+            lastError: persistentMessage,
             errorCode: statusCode,
           });
         } else if (errorType === PROVIDER_ERROR_TYPES.OAUTH_INVALID_TOKEN) {
           // OAuth 401 with invalid credentials - token refresh can recover
           await updateProviderConnection(errorConnectionId, {
             lastErrorType: errorType,
-            lastError: message,
+            lastError: persistentMessage,
             errorCode: statusCode,
           });
           console.warn(
@@ -4444,7 +4459,7 @@ export async function handleChatCore({
           // Cloud Code 403 with stale project: not a ban, keep account active.
           await updateProviderConnection(errorConnectionId, {
             lastErrorType: errorType,
-            lastError: message,
+            lastError: persistentMessage,
             errorCode: statusCode,
           });
           console.warn(
@@ -4460,7 +4475,7 @@ export async function handleChatCore({
           const geoCooldownMs = COOLDOWN_MS.geoBlocked ?? 24 * 60 * 60 * 1000;
           await updateProviderConnection(errorConnectionId, {
             lastErrorType: errorType,
-            lastError: message,
+            lastError: persistentMessage,
             errorCode: statusCode,
           });
           // T-PROBE: the 24h exclusion is a routing mutation — a probe must
@@ -4485,7 +4500,7 @@ export async function handleChatCore({
           const byopCooldownMs = COOLDOWN_MS.gcpProjectRequired ?? 24 * 60 * 60 * 1000;
           await updateProviderConnection(errorConnectionId, {
             lastErrorType: errorType,
-            lastError: message,
+            lastError: persistentMessage,
             errorCode: statusCode,
           });
           try {
@@ -5264,9 +5279,12 @@ export async function handleChatCore({
       }).catch(() => {});
       const malformed = describeMalformedNonStream(translatedResponse, malformedTranslatedReason);
       const malformedMessage = `[${provider}/${model}] ${malformed.message}`;
-      const malformedClientBody = buildErrorBody(HTTP_STATUS.BAD_GATEWAY, malformedMessage);
-      malformedClientBody.error.code = malformed.code;
-      malformedClientBody.error.type = malformed.type;
+      const malformedClientBody = buildErrorBody(
+        HTTP_STATUS.BAD_GATEWAY,
+        malformedMessage,
+        undefined,
+        { code: malformed.code, type: malformed.type }
+      );
       persistAttemptLogs({
         status: HTTP_STATUS.BAD_GATEWAY,
         tokens: usage,

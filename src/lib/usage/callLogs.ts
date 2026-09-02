@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { RequestPipelinePayloads } from "@omniroute/open-sse/utils/requestLogger.ts";
+import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/errorSanitization.ts";
 import { getDbInstance } from "../db/core";
 import { getRequestDetailLogByCallLogId } from "../db/detailedLogs";
 import { shouldPersistToDisk } from "./migrations";
@@ -21,7 +22,11 @@ import {
   getObservedReasoning,
 } from "./tokenAccounting";
 import { isNoLog } from "../compliance/noLog";
-import { protectPayloadForLog, parseStoredPayload } from "../logPayloads";
+import {
+  parseStoredPayload,
+  protectErrorPayloadForLog,
+  protectPayloadForLog,
+} from "../logPayloads";
 import { pickDisplayValue } from "@/shared/utils/maskEmail";
 import {
   CALL_LOGS_DIR,
@@ -335,7 +340,10 @@ function readLegacyLogFromDisk(entry: {
       return JSON.parse(fs.readFileSync(path.join(dir, files[0]), "utf8"));
     }
   } catch (error) {
-    console.error("[callLogs] Failed to read legacy disk log:", (error as Error).message);
+    console.error(
+      "[callLogs] Failed to read legacy disk log:",
+      sanitizeErrorMessage(error) || "Legacy call log read failed"
+    );
   }
 
   return null;
@@ -447,10 +455,19 @@ async function saveCallLogOperation(entry: any): Promise<void> {
     const noLogEnabled = Boolean(entry.noLog) || (apiKeyId ? isNoLog(apiKeyId) : false);
 
     const protectedRequestBody = noLogEnabled ? null : protectPayloadForLog(entry.requestBody);
-    const protectedResponseBody = noLogEnabled ? null : protectPayloadForLog(entry.responseBody);
+    const responseStatus = Number(entry.status);
+    const failedResponse = Number.isFinite(responseStatus) && responseStatus >= 400;
+    const protectedResponseBody = noLogEnabled
+      ? null
+      : failedResponse
+        ? protectErrorPayloadForLog(entry.responseBody)
+        : protectPayloadForLog(entry.responseBody);
     const protectedPipelinePayloads = noLogEnabled
       ? null
-      : protectPipelinePayloads(entry.pipelinePayloads ?? entry.pipeline ?? null);
+      : protectPipelinePayloads(
+          entry.pipelinePayloads ?? entry.pipeline ?? null,
+          failedResponse ? responseStatus : undefined
+        );
     const protectedError = sanitizeErrorForLog(entry.error);
 
     const account = await resolveAccountName(entry.connectionId || null);
@@ -582,7 +599,10 @@ async function saveCallLogOperation(entry: any): Promise<void> {
 
     scheduleCallLogRotation();
   } catch (error) {
-    console.error("[callLogs] Failed to save call log:", (error as Error).message);
+    console.error(
+      "[callLogs] Failed to save call log:",
+      sanitizeErrorMessage(error) || "Call log persistence failed"
+    );
   }
 }
 
