@@ -647,6 +647,36 @@ describe("LMArena Executor", () => {
     }
   });
 
+  it("normalizes an invalid upstream status before building the public error", async () => {
+    __setTlsFetchOverrideForTesting(async () => ({
+      status: 700,
+      headers: new Headers({ "Content-Type": "text/plain" }),
+      text: "InvalidStatusInternalFailure secret-status-id",
+      body: null,
+    }));
+
+    try {
+      const result = await new LMArenaExecutor().execute({
+        model: TEST_ARENA_MODEL_ID,
+        body: { messages: [{ role: "user", content: "Hello" }] },
+        credentials: { cookie: "session=test" },
+        signal: new AbortController().signal,
+        log: null,
+      });
+
+      assert.equal(result.response.status, 502);
+      const responseText = await result.response.text();
+      assert.deepEqual(JSON.parse(responseText).error, {
+        message: "Arena API error: 502",
+        type: "api_error",
+        code: "502",
+      });
+      assert.doesNotMatch(responseText, /InvalidStatusInternalFailure|secret-status-id/i);
+    } finally {
+      __setTlsFetchOverrideForTesting(null);
+    }
+  });
+
   it("does not expose structured upstream error details while preserving classification", async () => {
     const executor = new LMArenaExecutor();
     __setTlsFetchOverrideForTesting(async () => ({
@@ -749,6 +779,7 @@ describe("LMArena Executor", () => {
       assert.equal(errorLogs.length, 1);
       const responseText = await result.response.text();
       const json = JSON.parse(responseText);
+      assert.equal(json.error?.message, "Arena upstream error");
       assert.equal(json.error?.type, "network_error");
       assert.equal(json.error?.code, "request_failed");
       const publicOutput = `${errorLogs.join("\n")}\n${responseText}`;
@@ -866,6 +897,42 @@ describe("LMArena Executor", () => {
     }
   });
 
+  it("does not expose TLS-client failure details in the public response", async () => {
+    const tlsFailure = new TlsClientUnavailableError(
+      "NativeTlsBridgeFailure secret-adapter-id at /srv/private/lmarena-native.ts:22:4"
+    ) as TlsClientUnavailableError & { cause?: unknown };
+    tlsFailure.cause = new Error("NativeTlsCause secret-cause-id");
+    __setTlsFetchOverrideForTesting(async () => {
+      throw tlsFailure;
+    });
+
+    try {
+      const result = await new LMArenaExecutor().execute({
+        model: TEST_ARENA_MODEL_ID,
+        body: { messages: [{ role: "user", content: "Hello" }] },
+        credentials: { cookie: "session=test" },
+        signal: new AbortController().signal,
+        log: null,
+      });
+
+      assert.equal(result.response.status, 502);
+      const responseText = await result.response.text();
+      const json = JSON.parse(responseText);
+      assert.deepEqual(json.error, {
+        message:
+          "Arena TLS impersonation unavailable: Arena upstream error. Install/repair tls-client-node native binary.",
+        type: "upstream_error",
+        code: "TLS_CLIENT_UNAVAILABLE",
+      });
+      assert.doesNotMatch(
+        responseText,
+        /NativeTlsBridgeFailure|secret-adapter-id|lmarena-native|NativeTlsCause|secret-cause-id/i
+      );
+    } finally {
+      __setTlsFetchOverrideForTesting(null);
+    }
+  });
+
   it("uses a stable public fallback for blank network and upstream event errors", async (t) => {
     const stackOnly = "\n    at SecretOnlyFrame (/srv/private/lmarena-stack-only.ts:2:3)";
     const cases = [
@@ -918,6 +985,43 @@ describe("LMArena Executor", () => {
     }
   });
 
+  it("does not expose non-streaming upstream event details", async () => {
+    const upstreamFailure =
+      "ArenaEventInternalFailure secret-event-id\n" +
+      "    at ArenaEventAdapter (/srv/private/lmarena-event.ts:31:8)";
+    __setTlsFetchOverrideForTesting(async () => ({
+      status: 200,
+      headers: new Headers({ "Content-Type": "text/event-stream" }),
+      text: `3:${JSON.stringify(upstreamFailure)}\n`,
+      body: null,
+    }));
+
+    try {
+      const result = await new LMArenaExecutor().execute({
+        model: TEST_ARENA_MODEL_ID,
+        body: { messages: [{ role: "user", content: "Hello" }] },
+        credentials: { cookie: "session=test" },
+        signal: new AbortController().signal,
+        log: null,
+      });
+
+      assert.equal(result.response.status, 502);
+      const responseText = await result.response.text();
+      const json = JSON.parse(responseText);
+      assert.deepEqual(json.error, {
+        message: "Arena upstream error",
+        type: "api_error",
+        code: "lmarena_error",
+      });
+      assert.doesNotMatch(
+        responseText,
+        /ArenaEventInternalFailure|secret-event-id|ArenaEventAdapter|lmarena-event/i
+      );
+    } finally {
+      __setTlsFetchOverrideForTesting(null);
+    }
+  });
+
   it("uses a stable public fallback for blank streaming event errors", async () => {
     const stackOnly = "\n    at SecretOnlyFrame (/srv/private/lmarena-stream-stack-only.ts:2:3)";
     const encoded = new TextEncoder().encode(`data: 3:${JSON.stringify(stackOnly)}\n\n`);
@@ -950,8 +1054,113 @@ describe("LMArena Executor", () => {
         .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
         .map((line) => JSON.parse(line.slice(6)))
         .find((chunk) => chunk.error);
-      assert.equal(payload?.error?.message, "Arena upstream error");
+      assert.deepEqual(payload?.error, {
+        message: "Arena upstream error",
+        type: "api_error",
+        code: "lmarena_error",
+      });
       assert.doesNotMatch(responseText, /SecretOnlyFrame|lmarena-stream-stack-only/);
+    } finally {
+      __setTlsFetchOverrideForTesting(null);
+    }
+  });
+
+  it("does not expose streaming upstream event details", async () => {
+    const upstreamFailure =
+      "StreamingArenaInternalFailure secret-stream-id\n" +
+      "    at StreamingArenaAdapter (/srv/private/lmarena-stream-event.ts:44:9)";
+    const encoded = new TextEncoder().encode(`data: 3:${JSON.stringify(upstreamFailure)}\n\n`);
+    __setTlsFetchOverrideForTesting(async () => ({
+      status: 200,
+      headers: new Headers({ "Content-Type": "text/event-stream" }),
+      text: null,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoded);
+          controller.close();
+        },
+      }),
+    }));
+
+    try {
+      const result = await new LMArenaExecutor().execute({
+        model: TEST_ARENA_MODEL_ID,
+        body: { messages: [{ role: "user", content: "Hello" }], stream: true },
+        stream: true,
+        credentials: { cookie: "session=test" },
+        signal: new AbortController().signal,
+        log: null,
+      });
+
+      assert.equal(result.response.status, 200);
+      const responseText = await result.response.text();
+      const payload = responseText
+        .split("\n")
+        .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+        .map((line) => JSON.parse(line.slice(6)))
+        .find((chunk) => chunk.error);
+      assert.deepEqual(payload?.error, {
+        message: "Arena upstream error",
+        type: "api_error",
+        code: "lmarena_error",
+      });
+      assert.doesNotMatch(
+        responseText,
+        /StreamingArenaInternalFailure|secret-stream-id|StreamingArenaAdapter|lmarena-stream-event/i
+      );
+    } finally {
+      __setTlsFetchOverrideForTesting(null);
+    }
+  });
+
+  it("does not expose transport errors rejected by the upstream stream", async () => {
+    const streamFailure = new Error(
+      "ArenaStreamTransportFailure secret-transport-id at /srv/private/lmarena-reader.ts:52:6"
+    ) as Error & { cause?: unknown; statusCode?: number };
+    streamFailure.cause = new Error("ArenaStreamCause secret-stream-cause-id");
+    streamFailure.statusCode = 502;
+    __setTlsFetchOverrideForTesting(async () => ({
+      status: 200,
+      headers: new Headers({ "Content-Type": "text/event-stream" }),
+      text: null,
+      body: new ReadableStream({
+        start(controller) {
+          controller.error(streamFailure);
+        },
+      }),
+    }));
+
+    try {
+      const result = await new LMArenaExecutor().execute({
+        model: TEST_ARENA_MODEL_ID,
+        body: { messages: [{ role: "user", content: "Hello" }], stream: true },
+        stream: true,
+        credentials: { cookie: "session=test" },
+        signal: new AbortController().signal,
+        log: null,
+      });
+
+      assert.equal(result.response.status, 200);
+      await assert.rejects(result.response.text(), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, "Arena upstream stream error");
+        assert.equal(error.stack, undefined);
+        const projected = error as Error & {
+          cause?: unknown;
+          statusCode?: number;
+          type?: string;
+          code?: string;
+        };
+        assert.equal(projected.cause, undefined);
+        assert.equal(projected.statusCode, 502);
+        assert.equal(projected.type, "upstream_error");
+        assert.equal(projected.code, "lmarena_stream_error");
+        assert.doesNotMatch(
+          error.message,
+          /ArenaStreamTransportFailure|secret-transport-id|lmarena-reader|ArenaStreamCause|secret-stream-cause-id/i
+        );
+        return true;
+      });
     } finally {
       __setTlsFetchOverrideForTesting(null);
     }

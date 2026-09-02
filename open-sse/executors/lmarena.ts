@@ -158,11 +158,11 @@ export class LMArenaExecutor extends BaseExecutor {
     } catch (error) {
       if (isTlsClientUnavailableError(error)) {
         log?.error?.("LMArenaExecutor", `TLS client unavailable: ${sanitizeLMArenaError(error)}`);
-        return mapTlsUnavailable(error, url, headers, transformedBody);
+        return mapTlsUnavailable(url, headers, transformedBody);
       }
-      const publicMessage = sanitizeLMArenaError(error);
-      log?.error?.("LMArenaExecutor", `Request failed: ${publicMessage}`);
-      return mapNetworkError(error, url, headers, transformedBody);
+      const logMessage = sanitizeLMArenaError(error);
+      log?.error?.("LMArenaExecutor", `Request failed: ${logMessage}`);
+      return mapNetworkError(url, headers, transformedBody);
     }
   }
 
