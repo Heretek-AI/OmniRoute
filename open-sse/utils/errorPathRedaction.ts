@@ -199,17 +199,6 @@ function isKnownPosixFilesystemPath(value: string): boolean {
   return isKnownPosixFilesystemPathAt(value, 0);
 }
 
-function isUnambiguousPosixFilesystemPathAt(value: string, start: number): boolean {
-  if (!isKnownPosixFilesystemPathAt(value, start)) return false;
-  // `/app` is also a common application route and is shielded only when an
-  // explicit Route/HTTP context proves that interpretation.
-  return !matchesPosixFilesystemRootAt(value, start, "/app");
-}
-
-function isUnambiguousPosixFilesystemPath(value: string): boolean {
-  return isUnambiguousPosixFilesystemPathAt(value, 0);
-}
-
 function looksLikeAbsolutePath(token: string): boolean {
   // POSIX: common filesystem roots, with or without a source extension.
   // Windows: drive-letter, UNC, or extended-length absolute paths.
