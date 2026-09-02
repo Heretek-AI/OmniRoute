@@ -1,6 +1,6 @@
 import { BaseExecutor, type ExecuteInput } from "./base.ts";
 import { prepareToolMessages, buildToolAwareResult } from "../translator/webTools.ts";
-import { sanitizeErrorMessage } from "../utils/error.ts";
+import { buildErrorBody, sanitizeErrorMessage } from "../utils/error.ts";
 
 const ADAPTA_APP_URL = "https://agent.adapta.one";
 const ADAPTA_CLERK_URL = "https://clerk.agent.adapta.one";
@@ -467,9 +467,10 @@ export class AdaptaWebExecutor extends BaseExecutor {
     const reader = resp.body!.getReader();
     let buf = "";
     let fullText = "";
+    let upstreamErrorMessage: string | null = null;
 
     try {
-      while (true) {
+      readLoop: while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
@@ -481,6 +482,9 @@ export class AdaptaWebExecutor extends BaseExecutor {
             const ev = JSON.parse(line.slice(6));
             if (ev.type === "text-delta" && ev.id !== "quick-response") {
               fullText += String(ev.delta ?? "");
+            } else if (ev.type === "error") {
+              upstreamErrorMessage = "Adapta upstream error";
+              break readLoop;
             }
           } catch {
             // skip
@@ -488,7 +492,22 @@ export class AdaptaWebExecutor extends BaseExecutor {
         }
       }
     } finally {
+      if (upstreamErrorMessage) {
+        void reader.cancel("Adapta upstream SSE error").catch(() => undefined);
+      }
       reader.releaseLock();
+    }
+
+    if (upstreamErrorMessage) {
+      return {
+        response: new Response(JSON.stringify(buildErrorBody(502, upstreamErrorMessage)), {
+          status: 502,
+          headers: { "Content-Type": "application/json" },
+        }),
+        url: ADAPTA_STREAM_URL,
+        headers,
+        transformedBody: requestPayload,
+      };
     }
 
     if (hasTools) {
