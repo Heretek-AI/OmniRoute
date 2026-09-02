@@ -421,29 +421,57 @@ function prependBufferedChunks(
   chunks: Uint8Array[],
   reader: ReadableStreamDefaultReader<Uint8Array>
 ): ReadableStream<Uint8Array> {
+  let bufferedIndex = 0;
+  let cancelled = false;
+  let readerReleased = false;
+
+  const releaseReader = () => {
+    if (readerReleased) return;
+    readerReleased = true;
+    try {
+      reader.releaseLock();
+    } catch {
+      // A hostile source can keep a read/cancel pending forever. The public stream must
+      // remain cancellable even when its abandoned source cannot release immediately.
+    }
+  };
+
   return new ReadableStream<Uint8Array>({
-    async start(controller) {
+    async pull(controller) {
+      if (cancelled) return;
+
+      // Replay exactly one readiness chunk per pull. Keeping the first buffered chunk at
+      // the stream's default high-water mark prevents an eager read of a later upstream
+      // failure from discarding that legitimate prefix before the caller attaches.
+      if (bufferedIndex < chunks.length) {
+        controller.enqueue(chunks[bufferedIndex]);
+        bufferedIndex += 1;
+        return;
+      }
+
       try {
-        for (const chunk of chunks) {
-          controller.enqueue(chunk);
+        const { done, value } = await reader.read();
+        if (cancelled) return;
+        if (done) {
+          releaseReader();
+          controller.close();
+          return;
         }
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (value) controller.enqueue(value);
-        }
-
-        controller.close();
+        if (value) controller.enqueue(value);
       } catch (error) {
-        controller.error(error);
-      } finally {
-        reader.releaseLock();
+        releaseReader();
+        if (!cancelled) controller.error(error);
       }
     },
-    async cancel(reason) {
-      await reader.cancel(reason).catch(() => {});
-      reader.releaseLock();
+    cancel(reason) {
+      if (cancelled) return;
+      cancelled = true;
+      // Do not await a provider's cancel hook: a hostile or stalled source must not make
+      // downstream cancellation hang. Release the lock once cancellation actually settles.
+      void reader
+        .cancel(reason)
+        .catch(() => {})
+        .finally(releaseReader);
     },
   });
 }

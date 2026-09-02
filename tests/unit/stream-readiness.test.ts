@@ -451,6 +451,43 @@ test("ensureStreamReadiness preserves buffered chunks when stream starts", async
   assert.match(text, / world/);
 });
 
+test("ensureStreamReadiness preserves its buffered prefix until a delayed consumer observes a later error", async () => {
+  const prefix = `data: ${JSON.stringify({
+    object: "chat.completion.chunk",
+    choices: [
+      {
+        index: 0,
+        delta: { role: "assistant", content: "prefix before failure" },
+        finish_reason: null,
+      },
+    ],
+  })}\n\n`;
+  let pullCount = 0;
+  const response = new Response(
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pullCount += 1;
+        if (pullCount === 1) {
+          controller.enqueue(encoder.encode(prefix));
+          return;
+        }
+        controller.error(new Error("later upstream failure"));
+      },
+    }),
+    { status: 200, headers: { "Content-Type": "text/event-stream" } }
+  );
+
+  const result = await ensureStreamReadiness(response, { timeoutMs: 100 });
+  assert.equal(result.ok, true);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+
+  const reader = result.response.body!.getReader();
+  const first = await reader.read();
+  assert.equal(first.done, false);
+  assert.match(new TextDecoder().decode(first.value), /prefix before failure/);
+  await assert.rejects(() => reader.read(), /later upstream failure/);
+});
+
 test("ensureStreamReadiness honors configured timeouts above 2000ms", async () => {
   const response = new Response(
     streamFromChunks(
@@ -616,10 +653,7 @@ test("ensureStreamReadiness preserves sanitized error-only diagnostics on early 
   assert.equal(result.response.status, 502);
   assert.equal(result.code, "STREAM_EARLY_EOF");
   assert.equal(result.type, "stream_early_eof");
-  assert.equal(
-    result.classificationReason,
-    "Stream ended before producing a non-ping SSE event"
-  );
+  assert.equal(result.classificationReason, "Stream ended before producing a non-ping SSE event");
   assert.equal(
     result.upstreamDiagnostic,
     "UPSTREAM_DETAIL quota exhausted; retry after 2s; empty content Bearer [REDACTED] <path>"
@@ -636,16 +670,9 @@ test("ensureStreamReadiness preserves sanitized error-only diagnostics on early 
   assert.equal(body.upstream_details.error.message, result.upstreamDiagnostic);
   assert.equal(warnings.length, 1);
 
-  for (const surfaced of [
-    result.reason,
-    body.upstream_details.error.message,
-    warnings[0],
-  ]) {
+  for (const surfaced of [result.reason, body.upstream_details.error.message, warnings[0]]) {
     assert.match(surfaced, /UPSTREAM_DETAIL/);
-    assert.doesNotMatch(
-      surfaced,
-      /SECOND_DETAIL|TOP_SECRET|\/srv\/omniroute\/handler\.ts/
-    );
+    assert.doesNotMatch(surfaced, /SECOND_DETAIL|TOP_SECRET|\/srv\/omniroute\/handler\.ts/);
   }
 });
 
