@@ -14,7 +14,7 @@
  *
  * Guards: A = `max` survives for native DeepSeek models; B = `max` stays canonical
  * for every other provider (sanitizer maps per-upstream later); C = routed DeepSeek
- * namespaces (openrouter/tllm) are NOT treated as native; D = an explicit client
+ * namespaces (openrouter/oc) are NOT treated as native; D = an explicit client
  * `reasoning_effort` still wins; E = catalog effort-tier extension is idempotent.
  */
 import test from "node:test";
@@ -65,11 +65,7 @@ test("B: `max` is a first-class canonical value for every other provider", () =>
 
 test("C: routed DeepSeek namespaces are not treated as the native provider", () => {
   // These terminate at a different upstream whose effort vocabulary we do not control.
-  for (const model of [
-    "openrouter/deepseek/deepseek-v4-flash-0731",
-    "tllm/deepseek_v4",
-    "oc/deepseek-v4-flash-free",
-  ]) {
+  for (const model of ["openrouter/deepseek/deepseek-v4-flash-0731", "oc/deepseek-v4-flash-free"]) {
     assert.equal(isDeepSeekNativeMaxModel(null, model), false, `${model} is not native`);
     const out = normalizeReasoningRequest({ model, effort: "max" }) as Record<string, unknown>;
     assert.equal(out.reasoning_effort, "max");
