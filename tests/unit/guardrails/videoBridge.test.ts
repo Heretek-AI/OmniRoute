@@ -121,7 +121,7 @@ test("preserves scene-aware sampler metadata in guardrail meta and the transpare
   );
 });
 
-test("reports only validated transcript provenance in guardrail metadata", async () => {
+test("reports only validated transcript provenance in guardrail metadata and carries a redaction map for logs", async () => {
   const bridge = new VideoBridgeGuardrail({
     deps: {
       getSettings: async () => ({
@@ -135,6 +135,8 @@ test("reports only validated transcript provenance in guardrail metadata", async
         });
         return {
           description: "[Video description: caption; transcript[source=client] spoken words]",
+          descriptionRedacted:
+            "[Video description: caption; transcript[source=client] [redacted-video-transcript]]",
           durationSeconds: 2,
           framesRequested: 1,
           framesUsed: 1,
@@ -170,6 +172,34 @@ test("reports only validated transcript provenance in guardrail metadata", async
     {}
   );
   assert.equal(result.meta?.transcriptCuesApplied, 1);
+  // #12150 P1a: at least one transcript cue was rendered, so the guardrail
+  // must mark itself observed and hand a redaction map keyed to the exact
+  // replaced part, with the placeholder in and the secret text out.
+  assert.equal(result.meta?.videoBridgeObserved, true);
+  // #12150 fix round 1: the downstream consumer matches by content
+  // (`fullText`), not by messageIndex/partIndex (see the interface doc on
+  // VideoBridgeLogRedactionEntry) — assert fullText is present and is the
+  // exact unredacted text that was placed into the part, alongside the
+  // still-positional (now advisory) fields and the placeholder text.
+  assert.deepEqual(result.meta?.videoBridgeLogRedaction, [
+    {
+      container: "messages",
+      messageIndex: 0,
+      partIndex: 0,
+      fullText: "[Video description: caption; transcript[source=client] spoken words]",
+      redactedText:
+        "[Video description: caption; transcript[source=client] [redacted-video-transcript]]",
+    },
+  ]);
+});
+
+test("leaves videoBridgeObserved false with no redaction map for a video with frames but no transcript", async () => {
+  // #12150 P1a: a plain video (frames only, no transcript cue) must NOT be
+  // marked observed — logging/Memory for ordinary video traffic must stay
+  // unaffected by the redaction machinery.
+  const result = await guardrail().preCall(payload(), {});
+  assert.equal(result.meta?.videoBridgeObserved, false);
+  assert.equal(result.meta?.videoBridgeLogRedaction, undefined);
 });
 
 test("converts Responses input using input_text while preserving sibling order", async () => {
@@ -447,6 +477,77 @@ test("real Video Bridge cache hit avoids a second model call and records the hit
     Buffer.byteLength(String((firstTextPart as { text: string }).text), "utf8")
   );
   assert.equal(afterStats.resultCacheLatencyMs - beforeStats.resultCacheLatencyMs >= 0, true);
+});
+
+// #12150 P1a: `descriptionRedacted` is threaded through the whole-result
+// cache (VideoResultCacheMetadata), not just the fresh-computation path — a
+// cache hit for a video carrying a transcript cue must still surface
+// `videoBridgeObserved`/`videoBridgeLogRedaction`, or a second identical
+// request would silently stop redacting.
+test("real Video Bridge cache hit preserves the redacted transcript shadow across cache reuse", async () => {
+  let modelCalls = 0;
+  const buildBody = () => ({
+    ...payload(),
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_video",
+            video_url: "data:video/mp4;base64,QUJD",
+            transcript: {
+              cues: [{ text: "cached secret cue", start: 0, end: 1, source: "client" }],
+            },
+          },
+          { type: "text", text: "What happens?" },
+        ],
+      },
+    ],
+  });
+  const bridge = new VideoBridgeGuardrail({
+    deps: {
+      getSettings: async () => ({
+        modalityBridgeVideoEnabled: true,
+        modalityBridgeVideoModel: "openai/gpt-4o-mini",
+        modalityBridgeVisionPrompt: "cache redaction integration 12150",
+        modalityBridgeCacheEnabled: true,
+        modalityBridgeCacheTtlMinutes: 60,
+        modalityBridgeCacheMaxEntries: 50,
+      }),
+      getCapabilities: () => ({ supportsVideo: false }),
+      selectVisionModel: async () => "openai/gpt-4o-mini",
+      extractFrames: async () => ({
+        durationSeconds: 1,
+        frames: [{ timestampSeconds: 0.5, dataUri: "data:image/jpeg;base64,CACHE12150" }],
+      }),
+      callVisionModel: async () => {
+        modelCalls += 1;
+        return "cached observation";
+      },
+    },
+  });
+
+  const first = await bridge.preCall(buildBody(), {});
+  const second = await bridge.preCall(buildBody(), {});
+  assert.equal(modelCalls, 1, "the second call must be served from the result cache");
+
+  for (const result of [first, second]) {
+    assert.equal(result.meta?.videoBridgeObserved, true);
+    const redaction = result.meta?.videoBridgeLogRedaction as
+      Array<{ fullText: string; redactedText: string }> | undefined;
+    assert.equal(redaction?.length, 1);
+    // #12150 fix round 1: fullText must be the exact unredacted text that
+    // landed in the replaced part — the content-address key the downstream
+    // consumer matches on — verified against the guardrail's own
+    // modifiedPayload rather than a hardcoded string (the rendered text
+    // here comes from the real describeVideoPart pipeline, not a fixture).
+    const modifiedPart = (result.modifiedPayload as ReturnType<typeof buildBody>).messages[0]
+      .content[0] as { text: string };
+    assert.equal(redaction?.[0]?.fullText, modifiedPart.text);
+    assert.doesNotMatch(redaction?.[0]?.fullText ?? "", /\[redacted-video-transcript\]/);
+    assert.match(redaction?.[0]?.redactedText ?? "", /\[redacted-video-transcript\]/);
+    assert.doesNotMatch(redaction?.[0]?.redactedText ?? "", /cached secret cue/);
+  }
 });
 
 test("real primary failure reports and caches the successful fallback model identity", async () => {

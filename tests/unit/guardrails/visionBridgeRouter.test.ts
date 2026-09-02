@@ -194,7 +194,7 @@ test("getBestVisionModel — revalidates a cached model against the current live
 });
 
 test("getBestVisionModel — accepts a registry model whose liveCatalogIds match upstream", async () => {
-  // #11754 retired ChatGPT Web (cgpt-web) after this test was authored — it was the
+  // #11754 retired the legacy ChatGPT Web implementation after this test was authored — it was the
   // only registry provider populating `liveCatalogIds` (curated ids whose public name
   // differs from the id sent upstream). No live provider currently uses that field, so
   // this exercises the same production predicate (createCatalogModelPredicate's
