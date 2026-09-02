@@ -44,9 +44,7 @@ export const NO_AUTH_PROVIDER_IDS = new Set(["aihorde", "opencode", "duckduckgo-
 // above, which needed no configuration at all — they were just never
 // exercised. duckduckgo-web is kept in despite being currently broken
 // upstream (400 ERR_BAD_REQUEST as of this writing) because that's a real,
-// reportable data point, not benchmark noise. theoldllm was tried and
-// dropped: this deployment's egress IP is blocked by Vercel for it (403),
-// an environment limitation, not a model worth benchmarking here.
+// reportable data point, not benchmark noise.
 //
 // One or two representative models per provider, not the full catalog: a
 // full sweep of every free model across every provider would be a multi-hour
