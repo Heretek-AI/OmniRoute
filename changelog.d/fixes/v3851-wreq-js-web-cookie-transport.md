@@ -1,0 +1,1 @@
+- **fix(providers):** Claude, Grok, LMArena, Notion, and Perplexity web-cookie transports now use pooled `wreq-js` 3.2 instead of the native sidecar, with all nine supported bindings pinned and audited, and the applicable platform binding plus native-license evidence included in each release artifact.
