@@ -16,6 +16,8 @@ type OpenAIMessage = {
 };
 
 const CHAT_URL = "https://api.1min.ai/api/chat-with-ai";
+const MAX_STREAM_ERROR_DATA_CHARS = 64 * 1024;
+const STREAM_ERROR_FALLBACK = "1min.ai upstream stream failed";
 const ROLE_LABELS: Record<string, string> = {
   system: "System",
   developer: "System",
@@ -69,7 +71,35 @@ function buildSseChunk(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`;
 }
 
-function buildOpenAiJsonCompletion(content: string, model: string, id: string, created: number): Response {
+function parseStreamErrorMessage(data: string): string {
+  if (!data || data.length > MAX_STREAM_ERROR_DATA_CHARS) return STREAM_ERROR_FALLBACK;
+
+  try {
+    const parsed = asRecord(JSON.parse(data));
+    const directMessage = typeof parsed.message === "string" ? parsed.message.trim() : "";
+    if (directMessage) return directMessage;
+
+    if (typeof parsed.error === "string") {
+      const errorMessage = parsed.error.trim();
+      if (errorMessage) return errorMessage;
+    }
+
+    const nestedError = asRecord(parsed.error);
+    const nestedMessage = typeof nestedError.message === "string" ? nestedError.message.trim() : "";
+    if (nestedMessage) return nestedMessage;
+  } catch {
+    // Malformed and over-complex payloads use the fixed public fallback below.
+  }
+
+  return STREAM_ERROR_FALLBACK;
+}
+
+function buildOpenAiJsonCompletion(
+  content: string,
+  model: string,
+  id: string,
+  created: number
+): Response {
   return new Response(
     JSON.stringify({
       id,
@@ -84,7 +114,11 @@ function buildOpenAiJsonCompletion(content: string, model: string, id: string, c
   );
 }
 
-function toOpenAiErrorResponse(status: number, message: string, upstreamDetails?: unknown): Response {
+function toOpenAiErrorResponse(
+  status: number,
+  message: string,
+  upstreamDetails?: unknown
+): Response {
   return new Response(JSON.stringify(buildErrorBody(status, message, upstreamDetails)), {
     status,
     headers: { "Content-Type": "application/json" },
@@ -96,27 +130,38 @@ function toOpenAiErrorResponse(status: number, message: string, upstreamDetails?
  * data: {...}) from the upstream Response body and re-emit them as standard
  * OpenAI chat.completion.chunk SSE.
  */
-function translateSseStream(upstreamBody: ReadableStream<Uint8Array>, model: string, id: string, created: number): ReadableStream<Uint8Array> {
+function translateSseStream(
+  upstreamBody: ReadableStream<Uint8Array>,
+  model: string,
+  id: string,
+  created: number
+): ReadableStream<Uint8Array> {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
-      controller.enqueue(
-        encoder.encode(
-          buildSseChunk({
-            id,
-            object: "chat.completion.chunk",
-            created,
-            model,
-            choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
-          })
-        )
-      );
-
       const reader = upstreamBody.getReader();
       let buffer = "";
       let finished = false;
+      let roleEmitted = false;
+      let terminatedWithError = false;
+
+      const emitRole = () => {
+        if (roleEmitted) return;
+        roleEmitted = true;
+        controller.enqueue(
+          encoder.encode(
+            buildSseChunk({
+              id,
+              object: "chat.completion.chunk",
+              created,
+              model,
+              choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+            })
+          )
+        );
+      };
 
       const finish = () => {
         if (finished) return;
@@ -138,6 +183,7 @@ function translateSseStream(upstreamBody: ReadableStream<Uint8Array>, model: str
 
       const emitContent = (text: string) => {
         if (!text) return;
+        emitRole();
         controller.enqueue(
           encoder.encode(
             buildSseChunk({
@@ -149,6 +195,16 @@ function translateSseStream(upstreamBody: ReadableStream<Uint8Array>, model: str
             })
           )
         );
+      };
+
+      const emitError = (data: string) => {
+        if (finished) return;
+        finished = true;
+        terminatedWithError = true;
+        const message = parseStreamErrorMessage(data);
+        controller.enqueue(encoder.encode(buildSseChunk(buildErrorBody(502, message))));
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
       };
 
       // SSE event framing: "event:"/"data:" lines, blank-line separated records.
@@ -171,8 +227,7 @@ function translateSseStream(upstreamBody: ReadableStream<Uint8Array>, model: str
             // Ignore malformed content events rather than surfacing partial JSON.
           }
         } else if (eventType === "error") {
-          emitContent(`\n[1min.ai error: ${data}]`);
-          finish();
+          emitError(data);
         } else if (eventType === "done") {
           finish();
         }
@@ -197,6 +252,9 @@ function translateSseStream(upstreamBody: ReadableStream<Uint8Array>, model: str
       } catch (error) {
         controller.error(error);
       } finally {
+        if (terminatedWithError) {
+          await reader.cancel("1min.ai upstream stream error").catch(() => {});
+        }
         reader.releaseLock();
       }
     },
@@ -290,7 +348,9 @@ export class OneMinAiExecutor extends BaseExecutor {
       const aiRecord = asRecord(json.aiRecord);
       const detail = asRecord(aiRecord.aiRecordDetail);
       const resultObject = Array.isArray(detail.resultObject) ? detail.resultObject : [];
-      const content = resultObject.filter((part): part is string => typeof part === "string").join("");
+      const content = resultObject
+        .filter((part): part is string => typeof part === "string")
+        .join("");
 
       return {
         response: buildOpenAiJsonCompletion(content, model, id, created),
