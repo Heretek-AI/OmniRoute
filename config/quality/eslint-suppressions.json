@@ -2476,14 +2476,6 @@
       "count": 2
     }
   },
-  "tests/theoldllm-stress.test.ts": {
-    "@typescript-eslint/no-explicit-any": {
-      "count": 10
-    },
-    "@typescript-eslint/no-unused-vars": {
-      "count": 1
-    }
-  },
   "tests/translator/testFromFile.ts": {
     "@typescript-eslint/no-explicit-any": {
       "count": 3
@@ -3373,7 +3365,7 @@
   },
   "tests/unit/combo-routing-engine.test.ts": {
     "@typescript-eslint/no-explicit-any": {
-      "count": 267
+      "count": 268
     }
   },
   "tests/unit/combo-same-provider-cascade.test.ts": {
