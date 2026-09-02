@@ -550,25 +550,20 @@
       "configSource": "<custom-config>",
       "provider": "tencent-aistudio-web"
     },
-    "theoldllm": {
-      "className": "TheOldLlmExecutor",
-      "configSource": "<custom-config>",
-      "provider": "theoldllm"
-    },
     "tinycms-web": {
       "className": "TinyCmsExecutor",
       "configSource": "<custom-config>",
       "provider": "tinycms-web"
     },
-    "tllm": {
-      "className": "TheOldLlmExecutor",
-      "configSource": "<custom-config>",
-      "provider": "theoldllm"
-    },
     "trae": {
       "className": "TraeExecutor",
       "configSource": "trae",
       "provider": "trae"
+    },
+    "uc": {
+      "className": "UcExecutor",
+      "configSource": "uc",
+      "provider": "uc"
     },
     "v0": {
       "className": "V0VercelWebExecutor",
@@ -671,6 +666,6 @@
       "provider": "zai-web"
     }
   },
-  "keyCount": 134,
+  "keyCount": 133,
   "sharedInstances": []
 }

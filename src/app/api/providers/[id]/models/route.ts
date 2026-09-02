@@ -612,7 +612,10 @@ export async function GET(
 
       try {
         const discovery = await discoverMaxaiModels({
-          providerSpecificData: connection.providerSpecificData,
+          providerSpecificData: connection.providerSpecificData as
+            | Record<string, unknown>
+            | null
+            | undefined,
           accessToken: apiKey || accessToken,
           fetchImpl: (url, init) =>
             safeOutboundFetch(url, {

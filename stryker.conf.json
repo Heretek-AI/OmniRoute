@@ -147,6 +147,7 @@
       "tests/unit/circuit-breaker-failure-kind.test.ts",
       "tests/unit/circuit-breaker-local-execution.test.ts",
       "tests/unit/circuit-breaker-registry-cap.test.ts",
+      "tests/unit/circuit-breaker-resolved-5xx-12254.test.ts",
       "tests/unit/circuit-breaker-stream-controller-4602.test.ts",
       "tests/unit/claude-code-parity.test.ts",
       "tests/unit/claude-effort-suffix-strip.test.ts",

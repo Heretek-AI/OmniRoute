@@ -627,6 +627,18 @@ export type CompatFilterOptions = {
   failOpen?: boolean;
 };
 
+function highestKnownOutputLimit(targets: ResolvedComboTarget[]): number {
+  let ceiling = 0;
+  for (const target of targets) {
+    const limit = getResolvedModelCapabilities({
+      provider: target.providerId || target.provider || null,
+      model: target.modelStr,
+    }).maxOutputTokens;
+    if (typeof limit === "number" && limit > ceiling) ceiling = limit;
+  }
+  return ceiling;
+}
+
 export function hasHardCapabilityFailure(reasons: string[]): boolean {
   return reasons.some((reason) => HARD_COMPAT_REASONS.has(reason));
 }
@@ -668,6 +680,16 @@ export function describeCapabilityFilterExhaustion(
     message = `No target in combo ${name} supports tool calling; request carried ${toolCount} tools`;
   } else if (primary === "vision") {
     message = `No target in combo ${name} has confirmed vision support for this image request`;
+  } else if (primary === "output_tokens") {
+    // #12229: name the real reason. Collapsing this into the structured-output
+    // message sent operators chasing response_format when the request's
+    // max_tokens simply exceeded every target's known output ceiling.
+    const ceiling = highestKnownOutputLimit(
+      rejected.filter((entry) => entry.reasons.includes("output_tokens")).map((e) => e.target)
+    );
+    message =
+      `No target in combo ${name} can produce the requested max_tokens=${requirements.requestedOutputTokens}; ` +
+      `the highest known output limit in the pool is ${ceiling}`;
   } else {
     message = `No target in combo ${name} supports structured output for this request`;
   }
