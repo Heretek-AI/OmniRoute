@@ -33,6 +33,19 @@ import { getBestVisionModel } from "./visionBridgeRouter";
 
 export type { VideoAnalysisContext } from "./videoBridgePipeline";
 
+/**
+ * One replaced video part whose rendered text carried a transcript cue.
+ * `redactedText` is the structured-redaction shadow (see
+ * `DescribedVideo.descriptionRedacted`) for that same part — never derived
+ * from the model-bound text, so it cannot be bypassed by cue content.
+ */
+export interface VideoBridgeLogRedactionEntry {
+  container: "messages" | "input";
+  messageIndex: number;
+  partIndex: number;
+  redactedText: string;
+}
+
 type VideoBridgeBody = {
   model?: string;
   messages?: Array<{ role?: string; content?: unknown }>;
@@ -163,6 +176,7 @@ export class VideoBridgeGuardrail extends BaseGuardrail {
     };
     let samplingPolicyEffective: "uniform" | "scene_aware" | "segment_aware" = "uniform";
     let failures = 0;
+    const logRedactionEntries: VideoBridgeLogRedactionEntry[] = [];
 
     const attemptedParts = parts.slice(0, runtime.maxVideos);
     for (let index = 0; index < attemptedParts.length; index++) {
@@ -191,6 +205,14 @@ export class VideoBridgeGuardrail extends BaseGuardrail {
       }
 
       descriptions.push(result.description);
+      if (result.descriptionRedacted !== undefined) {
+        logRedactionEntries.push({
+          container: part.container,
+          messageIndex: part.messageIndex,
+          partIndex: part.partIndex,
+          redactedText: result.descriptionRedacted,
+        });
+      }
       totalFramesRequested += result.framesRequested;
       totalFramesExtracted += result.framesExtracted;
       totalFramesUsed += result.framesUsed;
@@ -237,6 +259,15 @@ export class VideoBridgeGuardrail extends BaseGuardrail {
         focusWindowsApplied,
         focusHintsApplied,
         transcriptCuesApplied,
+        // True iff at least one transcript cue (declared transcript OR fused
+        // audio) was rendered into a replaced part — i.e. there is a redacted
+        // shadow for a downstream log/Memory consumer to prefer. Explicitly
+        // `false` (never omitted) for a video with frames but no transcript,
+        // so plain-video logging/Memory stays unaffected.
+        videoBridgeObserved: logRedactionEntries.length > 0,
+        ...(logRedactionEntries.length > 0
+          ? { videoBridgeLogRedaction: logRedactionEntries }
+          : {}),
         contactSheetsUsed,
         audioFusionRuns,
         audioFusionPartials,

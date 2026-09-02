@@ -203,6 +203,8 @@ interface VideoResultCacheMetadata {
   transcriptCuesApplied?: number;
   contactSheetUsed?: boolean;
   fusion?: VideoFusionTelemetry;
+  /** Log-safe redacted shadow of the cached description (see `DescribedVideo.descriptionRedacted`). */
+  descriptionRedacted?: string;
   cacheBytes: number;
   modelUsed: string;
 }
@@ -395,7 +397,8 @@ function isVideoResultCacheMetadata(
     (record.transcriptCuesApplied === undefined ||
       isFiniteNonNegativeInteger(record.transcriptCuesApplied)) &&
     (record.contactSheetUsed === undefined || typeof record.contactSheetUsed === "boolean") &&
-    (record.fusion === undefined || isFusionTelemetry(record.fusion))
+    (record.fusion === undefined || isFusionTelemetry(record.fusion)) &&
+    (record.descriptionRedacted === undefined || typeof record.descriptionRedacted === "string")
   );
 }
 
@@ -520,6 +523,8 @@ export type ProcessVideoPartResult =
       contactSheetUsed: boolean;
       dedupDropped: number;
       description: string;
+      /** Log-safe redacted shadow (see `DescribedVideo.descriptionRedacted`); undefined when no transcript cue was rendered. */
+      descriptionRedacted?: string;
       durationSeconds: number;
       framesExtracted: number;
       framesRequested: number;
@@ -609,6 +614,7 @@ export async function processVideoPart(
           contactSheetUsed: meta.contactSheetUsed ?? false,
           dedupDropped: meta.dedupDropped ?? 0,
           description: cachedResult.value,
+          descriptionRedacted: meta.descriptionRedacted,
           durationSeconds: meta.durationSeconds,
           framesExtracted: meta.framesExtracted,
           framesRequested: meta.framesRequested,
@@ -667,6 +673,9 @@ export async function processVideoPart(
               transcriptCuesApplied: described.transcriptCues?.length ?? 0,
               contactSheetUsed: described.contactSheetUsed ?? false,
               ...(described.fusion ? { fusion: described.fusion } : {}),
+              ...(described.descriptionRedacted
+                ? { descriptionRedacted: described.descriptionRedacted }
+                : {}),
             },
           },
           context.log
@@ -704,6 +713,7 @@ export async function processVideoPart(
       contactSheetUsed: described.contactSheetUsed ?? false,
       dedupDropped: described.dedupDropped ?? 0,
       description: described.description,
+      descriptionRedacted: described.descriptionRedacted,
       durationSeconds: described.durationSeconds,
       framesExtracted: described.framesExtracted ?? described.framesUsed,
       framesRequested: described.framesRequested,
