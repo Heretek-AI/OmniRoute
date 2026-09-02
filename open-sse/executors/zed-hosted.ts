@@ -44,6 +44,7 @@ import {
   zedLlmFetch,
   type ZedCredentials,
 } from "../shared/zedAuth.ts";
+import { buildErrorBody } from "../utils/error.ts";
 import { resolveSuppressThinkClose, THINKING_MARKER_HEADER } from "../utils/thinkCloseMarker.ts";
 
 // Wire values for the `provider` field of POST /completions. These are NOT
@@ -122,25 +123,50 @@ function convertProviderEvent(
   return event;
 }
 
-function createErrorChunk(model: string, message: string): Record<string, unknown> {
-  return {
-    id: `chatcmpl-zed-error-${Date.now()}`,
-    object: "chat.completion.chunk",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [{ index: 0, delta: { content: `[Zed error] ${message}` }, finish_reason: "stop" }],
-  };
+const MAX_ZED_FAILURE_MESSAGE_LENGTH = 512;
+
+function boundedFailureText(value: unknown): string | null {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const text = String(value).trim();
+  return text ? text.slice(0, MAX_ZED_FAILURE_MESSAGE_LENGTH) : null;
+}
+
+function extractZedFailureMessage(failed: Record<string, unknown>): string {
+  const nestedError =
+    failed.error && typeof failed.error === "object" && !Array.isArray(failed.error)
+      ? (failed.error as Record<string, unknown>)
+      : null;
+  const candidates = [
+    failed.message,
+    nestedError?.message,
+    typeof failed.error === "object" ? undefined : failed.error,
+    failed.code,
+    nestedError?.code,
+  ];
+  for (const candidate of candidates) {
+    const text = boundedFailureText(candidate);
+    if (text) return text;
+  }
+  return "request failed";
+}
+
+function createErrorChunk(message: string): ReturnType<typeof buildErrorBody> {
+  return buildErrorBody(502, `Zed stream failed: ${message}`, undefined, {
+    type: "upstream_error",
+    code: "ZED_STREAM_FAILED",
+  });
 }
 
 /**
- * The single controller capability these SSE helpers use. They only ever enqueue —
- * never `close()`, never read `desiredSize` — so typing them by that one method lets
- * the same code serve both stream kinds. The wider
+ * The controller capabilities these SSE helpers use. Normal frames only enqueue;
+ * terminal failures also terminate so they do not depend on the upstream socket
+ * eventually reaching EOF. Narrow controller types keep the helpers honest. The wider
  * `ReadableStreamDefaultController` annotation rejected every call site, because the
  * helpers are driven from a TransformStream and `TransformStreamDefaultController`
  * has no `close()`.
  */
 type SseEnqueueTarget = Pick<ReadableStreamDefaultController<Uint8Array>, "enqueue">;
+type SseProcessTarget = Pick<TransformStreamDefaultController<Uint8Array>, "enqueue" | "terminate">;
 
 function enqueueSseObject(
   controller: SseEnqueueTarget,
@@ -235,7 +261,7 @@ function wrapZedCompletionStream(
     done = true;
   };
 
-  const processLine = (line: string, controller: SseEnqueueTarget) => {
+  const processLine = (line: string, controller: SseProcessTarget) => {
     if (done) return;
     const payload = unwrapZedLine(line);
     if (!payload) return;
@@ -246,10 +272,13 @@ function wrapZedCompletionStream(
     if (payload.status) {
       const status = normalizeStatus(payload.status);
       if (status?.type === "failed" || status?.failed) {
-        const failed = (status.failed as Record<string, unknown>) || status;
-        const message = String(failed.message || failed.error || failed.code || "request failed");
-        enqueueSseObject(controller, encoder, createErrorChunk(model, message));
-        finish(controller);
+        const failed =
+          status.failed && typeof status.failed === "object" && !Array.isArray(status.failed)
+            ? (status.failed as Record<string, unknown>)
+            : status;
+        enqueueSseObject(controller, encoder, createErrorChunk(extractZedFailureMessage(failed)));
+        done = true;
+        controller.terminate();
       } else if (status?.type === "stream_ended" || status === ("stream_ended" as unknown)) {
         finish(controller);
       }
