@@ -842,6 +842,29 @@
       "stream": "https://api.chatanywhere.org/v1/chat/completions"
     }
   },
+  "chatgpt-web": {
+    "format": "openai",
+    "headers": {
+      "apiKey": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "nonStream": {
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "oauth": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      }
+    },
+    "url": {
+      "nonStream": "https://chatgpt.com",
+      "stream": "https://chatgpt.com"
+    }
+  },
   "chatgpt-web-codex": {
     "format": "openai-responses",
     "headers": {
@@ -2391,6 +2414,29 @@
       "stream": "https://generativelanguage.googleapis.com/v1beta/models/test-model:streamGenerateContent?alt=sse"
     }
   },
+  "gemini-business": {
+    "format": "openai",
+    "headers": {
+      "apiKey": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "nonStream": {
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "oauth": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      }
+    },
+    "url": {
+      "nonStream": "https://business.gemini.google/home",
+      "stream": "https://business.gemini.google/home"
+    }
+  },
   "gemini-web": {
     "format": "openai",
     "headers": {
@@ -3612,6 +3658,29 @@
     "url": {
       "nonStream": "https://chat.maritaca.ai/api",
       "stream": "https://chat.maritaca.ai/api"
+    }
+  },
+  "maxai": {
+    "format": "openai",
+    "headers": {
+      "apiKey": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "nonStream": {
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "oauth": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      }
+    },
+    "url": {
+      "nonStream": "https://api.maxai.me",
+      "stream": "https://api.maxai.me"
     }
   },
   "meganova-ai": {
@@ -5521,29 +5590,6 @@
       "stream": "https://aistudio.tencent.ai/api/chat"
     }
   },
-  "theoldllm": {
-    "format": "openai",
-    "headers": {
-      "apiKey": {
-        "Accept": "text/event-stream",
-        "Authorization": "Bearer <TOK>",
-        "Content-Type": "application/json"
-      },
-      "nonStream": {
-        "Authorization": "Bearer <TOK>",
-        "Content-Type": "application/json"
-      },
-      "oauth": {
-        "Accept": "text/event-stream",
-        "Authorization": "Bearer <TOK>",
-        "Content-Type": "application/json"
-      }
-    },
-    "url": {
-      "nonStream": "https://theoldllm.vercel.app/api/chatgpt",
-      "stream": "https://theoldllm.vercel.app/api/chatgpt"
-    }
-  },
   "tinycms-web": {
     "format": "openai",
     "headers": {
@@ -5703,6 +5749,52 @@
     "url": {
       "nonStream": "https://api.opentyphoon.ai/v1/chat/completions",
       "stream": "https://api.opentyphoon.ai/v1/chat/completions"
+    }
+  },
+  "uc": {
+    "format": "openai",
+    "headers": {
+      "apiKey": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "nonStream": {
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "oauth": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      }
+    },
+    "url": {
+      "nonStream": "https://internal-6.pubyar.com",
+      "stream": "https://internal-6.pubyar.com"
+    }
+  },
+  "uc-direct": {
+    "format": "openai",
+    "headers": {
+      "apiKey": {
+        "Accept": "text/event-stream",
+        "Content-Type": "application/json",
+        "x-api-key": "<CRED>"
+      },
+      "nonStream": {
+        "Content-Type": "application/json",
+        "x-api-key": "<CRED>"
+      },
+      "oauth": {
+        "Accept": "text/event-stream",
+        "Content-Type": "application/json",
+        "x-api-key": "<CRED>"
+      }
+    },
+    "url": {
+      "nonStream": "https://api.uncensored.com/api/v1",
+      "stream": "https://api.uncensored.com/api/v1"
     }
   },
   "udio": {

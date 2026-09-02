@@ -249,6 +249,10 @@ const EXPLICIT_OPTIONAL_APIKEY_PROVIDER_IDS = new Set([
   "gitlawb",
   "gitlawb-gmi",
   "naga-ac",
+  // UC (uncensored.com) persona: un-metered subscription chat with NO API key —
+  // auth is a durable Clerk credential stored in providerSpecificData, from which
+  // the executor mints a short-lived session token per connect.
+  "uc",
 ]);
 
 export function providerAllowsOptionalApiKey(providerId: unknown): boolean {
@@ -278,6 +282,7 @@ const BULK_API_KEY_EXCLUDED = new Set([
   "blackbox-web",
   "muse-spark-web",
   "deepseek-web",
+  "chatgpt-web",
   "inner-ai",
   "qoder",
   "google-pse-search",
