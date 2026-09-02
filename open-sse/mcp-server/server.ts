@@ -93,7 +93,7 @@ import {
 import { getDbInstance, ensureDbInitialized } from "../../src/lib/db/core.ts";
 import { normalizeQuotaResponse } from "../../src/shared/contracts/quota.ts";
 import { resolveOmniRouteBaseUrl } from "../../src/shared/utils/resolveOmniRouteBaseUrl.ts";
-import { sanitizeErrorMessage } from "../utils/error.ts";
+import { toSafeMcpErrorMessage } from "./errorMessage.ts";
 import { mcpFetchTimeoutSignal } from "./fetchTimeout.ts";
 import { getMcpModelsCatalog } from "./catalog.ts";
 import { registerRadarCatalogTool } from "./radarCatalog.ts";
@@ -122,15 +122,6 @@ const TOTAL_MCP_TOOL_COUNT = countUniqueMcpTools({
   localCorpusTools,
   compressionTools,
 });
-
-function toSafeMcpErrorMessage(value: unknown, fallback = "MCP tool execution failed"): string {
-  try {
-    const raw = value instanceof Error ? value.message : value;
-    return sanitizeErrorMessage(raw) || fallback;
-  } catch {
-    return fallback;
-  }
-}
 
 type JsonRecord = Record<string, unknown>;
 
@@ -337,9 +328,7 @@ async function handleGetHealth() {
       .filter(({ settled }) => settled.status === "rejected")
       .map(({ source, settled }) => ({
         source,
-        error: sanitizeErrorMessage(
-          settled.status === "rejected" ? (settled as PromiseRejectedResult).reason : undefined
-        ),
+        error: toSafeMcpErrorMessage((settled as PromiseRejectedResult).reason, ""),
       }));
 
     const result = {

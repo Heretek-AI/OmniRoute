@@ -6,6 +6,7 @@ import { injectMemoryAndSkills } from "./chatCore/memorySkillsInjection.ts";
 import { resolveChatCoreRequestSetup } from "./chatCore/requestSetup.ts";
 import { normalizeOpenAICompatibleTools } from "./chatCore/openAICompatibleTools.ts";
 import { buildFailureUsageRecord, projectFailureUsageErrorCode } from "./chatCore/failureUsage.ts";
+import { createTranslationFailureResult } from "./chatCore/translationFailure.ts";
 import { estimateFinalInputTokens } from "./chatCore/contextEstimation.ts";
 import {
   extractSystemRoleMessages,
@@ -2489,33 +2490,11 @@ export async function handleChatCore({
         : HTTP_STATUS.SERVER_ERROR;
     const message = error?.message || "Invalid request";
     const errorType = typeof error?.errorType === "string" ? error.errorType : null;
-    const errorBody = buildErrorBody(
-      statusCode,
-      message,
-      undefined,
-      errorType ? { type: errorType, code: errorType } : undefined
-    );
-    const safeMessage = errorBody.error.message;
-
-    log?.warn?.("TRANSLATE", `Request translation failed: ${safeMessage}`);
-
-    if (errorType) {
-      trackPendingRequest(model, provider, connectionId, false);
-      return {
-        success: false,
-        status: statusCode,
-        error: safeMessage,
-        response: new Response(JSON.stringify(errorBody), {
-          status: statusCode,
-          headers: {
-            "Content-Type": "application/json",
-          },
-        }),
-      };
-    }
+    const result = createTranslationFailureResult(statusCode, message, errorType);
+    log?.warn?.("TRANSLATE", `Request translation failed: ${result.error}`);
 
     trackPendingRequest(model, provider, connectionId, false);
-    return createErrorResult(statusCode, safeMessage);
+    return result;
   }
 
   // The latest OmniGlyph release has protocol-native OpenAI transforms. Run

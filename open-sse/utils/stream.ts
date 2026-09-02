@@ -50,10 +50,11 @@ import { parseTextualToolCallCandidate, isValidToolCallHeaderPrefix } from "./te
 import { stripObfuscationZeroWidth } from "./zeroWidth.ts";
 import {
   formatTranslatedStreamError,
-  normalizeStreamFailurePayload,
+  prepareTranslatedStreamFailure,
   projectStreamFailureEvent,
   type StreamFailurePayload,
 } from "./streamErrorFormat.ts";
+import { createStreamFailureAborter } from "./streamFailureBoundary.ts";
 import { recordToolLatency } from "../services/toolLatencyTracker.ts";
 import { extractToolSchemaMap } from "../translator/response/openai-responses/toolSchemas.ts";
 import {
@@ -1174,89 +1175,37 @@ export function createSSEStream(options: StreamOptions = {}) {
     }
   };
 
-  const abortStreamFailure = (
-    controller: TransformStreamDefaultController<Uint8Array>,
-    failurePayload: StreamFailurePayload,
-    publicMessage: string,
-    options: { notifyComplete?: boolean } = {}
-  ): void => {
-    let failureHandled = false;
-    timing.markInterrupted();
-    if (onFailure) {
-      try {
-        // Keep the raw provider wording internal for quota/reset classification. The
-        // persistence seam sanitizes it after classification; public output uses the
-        // separately projected payload and message.
-        failureHandled = onFailure(failurePayload) === true;
-      } catch (e) {
-        console.debug(`[STREAM] onFailure callback error:`, e);
-      }
-    }
-    let publicErrorMessage = publicMessage || "Upstream failure";
-    if (options.notifyComplete && onComplete) {
-      const errorBody = buildErrorBody(failurePayload.status, failurePayload.message);
-      publicErrorMessage = errorBody.error.message;
-      try {
-        onComplete({
-          status: failurePayload.status,
-          usage: state?.usage,
-          responseBody: errorBody,
-          ttft: timing.ttftMs(),
-          itlMs: timing.avgItlMs(),
-          interrupted: timing.interrupted,
-          error: publicErrorMessage,
-          errorCode: failurePayload.code,
-          providerPayload: providerPayloadCollector.build(providerPayloadCollector.getSummary(), {
-            includeEvents: false,
-          }),
-          clientPayload: clientPayloadCollector.build(errorBody, { includeEvents: false }),
-        });
-        failureHandled = true;
-      } catch (e) {
-        console.debug(
-          `[STREAM] onComplete callback error in error path (${model || "unknown"}):`,
-          e
-        );
-      }
-    }
-    clearIdleTimer();
-    if (!failureHandled) {
-      clearPendingRequestFromStream();
-    }
-    controller.error(markPendingRequestCleared(new Error(publicErrorMessage)));
-  };
+  const abortStreamFailure = createStreamFailureAborter({
+    onFailure,
+    onComplete,
+    getUsage: () => state?.usage,
+    timing,
+    buildProviderPayload: () =>
+      providerPayloadCollector.build(providerPayloadCollector.getSummary(), {
+        includeEvents: false,
+      }),
+    buildClientPayload: (body) => clientPayloadCollector.build(body, { includeEvents: false }),
+    clearIdleTimer,
+    clearPendingRequest: clearPendingRequestFromStream,
+    markPendingRequestCleared,
+    model,
+  });
 
   const emitTranslatedFailureAndAbort = (
     controller: TransformStreamDefaultController<Uint8Array>,
     payload: unknown
   ): boolean => {
-    const record =
-      payload && typeof payload === "object" && !Array.isArray(payload)
-        ? (payload as JsonRecord)
-        : {};
-    const projectedFailure = projectStreamFailureEvent(record);
-    if (!projectedFailure && !record.error) return false;
-
-    providerPayloadCollector.push(projectedFailure?.publicPayload ?? record);
-
-    const internalFailure = projectedFailure?.internalFailure ??
-      normalizeStreamFailurePayload(record) ?? {
-        status: 502,
-        message: "Upstream failure",
-        code: "stream_error",
-        type: "server_error",
-      };
-    const output = formatTranslatedStreamError(record, sourceFormat);
+    const failure = prepareTranslatedStreamFailure(payload);
+    if (!failure) return false;
+    providerPayloadCollector.push(failure.providerPayload);
+    const output = formatTranslatedStreamError(failure.record, sourceFormat);
     reqLogger?.appendConvertedChunk?.(output);
     forward(controller, encoder.encode(output));
     upstreamErrorForwarded = true;
     doneSent = true;
-    abortStreamFailure(
-      controller,
-      internalFailure,
-      projectedFailure?.publicMessage || "Upstream failure",
-      { notifyComplete: true }
-    );
+    abortStreamFailure(controller, failure.internalFailure, failure.publicMessage, {
+      notifyComplete: true,
+    });
     return true;
   };
 

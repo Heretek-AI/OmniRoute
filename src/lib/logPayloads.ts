@@ -2,6 +2,7 @@ import {
   sanitizeErrorMessage,
   sanitizeUpstreamDetails,
 } from "@omniroute/open-sse/utils/errorSanitization.ts";
+import { projectResponsesFailureOutput } from "@omniroute/open-sse/utils/responsesFailureOutput.ts";
 import { sanitizePII } from "./piiSanitizer";
 
 const SENSITIVE_KEYS = new Set([
@@ -182,12 +183,24 @@ function projectErrorSubtreesForLog(
       // as content rather than treating it as an error message.
       const normalizedKey = key.replace(/[-_]/g, "").toLowerCase();
       const preservePartialOutput =
-        responsesFailure && protocolResponseObject && normalizedKey === "output";
-      const childIsProtocolResponse = declaresResponsesFailure && normalizedKey === "response";
+        responsesFailure &&
+        normalizedKey === "output" &&
+        (protocolResponseObject || declaresResponsesFailure);
+      if (preservePartialOutput) {
+        projected[key] = projectResponsesFailureOutput(
+          entryValue,
+          (_field, stringValue) => sanitizeErrorMessage(stringValue) || "[REDACTED]"
+        );
+        found = true;
+        continue;
+      }
+      const childIsProtocolResponse =
+        normalizedKey === "response" &&
+        (declaresResponsesFailure || (forceResponsesFailure && !protocolResponseObject));
       const result = projectErrorSubtreesForLog(
         entryValue,
         seen,
-        responsesFailure && !preservePartialOutput,
+        responsesFailure,
         childIsProtocolResponse
       );
       projected[key] = result.value;

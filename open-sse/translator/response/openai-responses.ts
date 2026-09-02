@@ -5,7 +5,7 @@
 import { register } from "../registry.ts";
 import { FORMATS } from "../formats.ts";
 import { appendToolCallArgumentDelta } from "../../utils/toolCallArguments.ts";
-import { buildErrorBody } from "../../utils/error.ts";
+import { projectCompletedStreamError } from "../../utils/streamErrorFormat.ts";
 import { fallbackToolCallId } from "../helpers/toolCallHelper.ts";
 import { shouldParseTextualReasoningTags } from "../../handlers/responseSanitizer.ts";
 import { getReadableReasoningValue } from "../../utils/reasoningFields.ts";
@@ -747,17 +747,7 @@ function sendCompleted(state, emit) {
     // translator or the OpenAI-Responses translator itself when the upstream
     // SSE stream emits a JSON error object after partial content.
     const upstreamErr = state.upstreamError;
-    const publicUpstreamError = upstreamErr
-      ? buildErrorBody(
-          Number.isInteger(upstreamErr.status) ? upstreamErr.status : 502,
-          upstreamErr.message,
-          undefined,
-          {
-            type: upstreamErr.type ?? "server_error",
-            code: String(upstreamErr.status ?? 502),
-          }
-        ).error
-      : null;
+    const publicUpstreamError = projectCompletedStreamError(upstreamErr);
 
     const response: Record<string, unknown> = {
       id: state.responseId,

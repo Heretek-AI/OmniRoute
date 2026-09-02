@@ -2724,8 +2724,7 @@ export async function markAccountUnavailable(
     // the opt-in setting probeCanDisable restores the historical behavior.
     if (await shouldIsolateProbeFailures()) {
       await updateProviderConnection(connectionId, {
-        // Keep safe provider wording for probe visibility, but project it at
-        // this persistence seam after classification has consumed the raw text.
+        // Persist safe wording only after classification has consumed the raw provider text.
         // backoffLevel is deliberately NOT written: a positive backoff
         // triggers the selection-time auto-decay (resetConnectionBackoff,
         // auth.ts getProviderCredentials) which wipes lastError back to
@@ -3146,7 +3145,6 @@ export async function markAccountUnavailable(
       );
       return { shouldFallback: true, cooldownMs: lockout.cooldownMs };
     }
-
     const errorMsg =
       sanitizeErrorMessage(describeUpstreamFailure(errorText)) || "Provider request failed";
 

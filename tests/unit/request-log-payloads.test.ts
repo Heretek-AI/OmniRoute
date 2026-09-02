@@ -302,10 +302,19 @@ test("sanitizes response.failed messages without rewriting unrelated deep diagno
     output: { trace: hostile },
     level1: { level2: { level3: { level4: { level5: { label: "legitimate diagnostic" } } } } },
   };
+  const output = [
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "safe direct partial output" }],
+    },
+    { type: "reasoning", reasoning_content: "private direct reasoning" },
+  ];
   const objectPayload = protectPayloadForLog({
     type: "response.failed",
     message: hostile,
     diagnostics,
+    output,
   });
   const protectedPipeline = protectPipelinePayloads({
     streamChunks: {
@@ -322,13 +331,88 @@ test("sanitizes response.failed messages without rewriting unrelated deep diagno
     (objectPayload as { diagnostics: typeof diagnostics }).diagnostics.level1,
     diagnostics.level1
   );
+  assert.deepEqual((objectPayload as { output: unknown }).output, [
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "safe direct partial output" }],
+    },
+  ]);
+  assert.doesNotMatch(serialized, /private direct reasoning/);
   assert.match(serialized, /response\.failed/);
+});
+
+test("projects nested output when the SSE event alone marks response.failed", () => {
+  const protectedPipeline = protectPipelinePayloads({
+    streamChunks: {
+      provider: [
+        `event: response.failed\ndata: ${JSON.stringify({
+          response: {
+            output: [
+              {
+                type: "message",
+                role: "assistant",
+                content: [{ type: "output_text", text: "safe event partial output" }],
+              },
+              { type: "reasoning", reasoning_content: "private event reasoning" },
+            ],
+          },
+        })}\n\n`,
+      ],
+    },
+  });
+  const serialized = JSON.stringify(protectedPipeline);
+
+  assert.match(serialized, /safe event partial output/);
+  assert.doesNotMatch(serialized, /private event reasoning|"reasoning"/);
 });
 
 test("sanitizes response.completed failed siblings in objects, SSE, and NDJSON", () => {
   const hostile = "Bearer completed-failed-secret at /srv/private/completed-failed.ts:8:2";
   const partialOutput = [
-    { type: "message", content: [{ type: "output_text", text: "partial safe output" }] },
+    {
+      id: "msg_partial",
+      type: "message",
+      role: "assistant",
+      status: "in_progress",
+      diagnostics: { trace: hostile },
+      content: [
+        {
+          type: "output_text",
+          text: "partial safe output",
+          annotations: [{ type: "url_citation", url: "file:///srv/private/citation" }],
+        },
+        { type: "output_text", phase: "commentary", text: "private commentary" },
+        { type: "refusal", refusal: "safe refusal" },
+      ],
+    },
+    {
+      id: "msg_roleless",
+      type: "message",
+      content: [{ type: "output_text", text: "private roleless output" }],
+    },
+    {
+      type: "reasoning",
+      reasoning_content: "private chain of thought",
+      encrypted_content: "private encrypted reasoning",
+    },
+    {
+      type: "function_call",
+      name: "read_private_file",
+      arguments: '{"api_key":"private tool argument"}',
+    },
+  ];
+  const projectedOutput = [
+    {
+      id: "msg_partial",
+      type: "message",
+      role: "assistant",
+      status: "in_progress",
+      content: [
+        { type: "output_text", text: "partial safe output" },
+        { type: "refusal", refusal: "safe refusal" },
+      ],
+    },
   ];
   const completedFailure = {
     type: "response.completed",
@@ -352,11 +436,16 @@ test("sanitizes response.completed failed siblings in objects, SSE, and NDJSON",
   });
   const serialized = JSON.stringify({ objectPayload, protectedPipeline });
 
-  assert.doesNotMatch(serialized, /completed-failed-secret|srv\/private|completed-failed\.ts/i);
+  assert.doesNotMatch(
+    serialized,
+    /completed-failed-secret|srv\/private|completed-failed\.ts|private commentary|private roleless|private chain|private encrypted|private tool/i
+  );
+  assert.doesNotMatch(serialized, /"annotations"|"diagnostics"|"function_call"|"reasoning"/);
   assert.match(serialized, /partial safe output/);
+  assert.match(serialized, /safe refusal/);
   assert.deepEqual(
-    (objectPayload as { response: { output: typeof partialOutput } }).response.output,
-    partialOutput
+    (objectPayload as { response: { output: typeof projectedOutput } }).response.output,
+    projectedOutput
   );
 });
 

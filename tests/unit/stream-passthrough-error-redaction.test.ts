@@ -173,13 +173,79 @@ test("Responses response.failed is projected before forwarding, logging, and onF
           type: "message",
           role: "assistant",
           status: "in_progress",
+          diagnostics: {
+            stack: "at /srv/omniroute/private-runtime.ts:47:2",
+            api_key: "sk-stream-secret-output-diagnostics",
+          },
           content: [
             {
               type: "output_text",
               text: "safe partial output",
+              annotations: [
+                {
+                  type: "url_citation",
+                  url: "https://example.invalid/?token=sk-stream-secret-annotation",
+                  title: "at /srv/omniroute/private-runtime.ts:48:2",
+                },
+              ],
+            },
+            {
+              type: "output_text",
+              phase: "commentary",
+              text: "hidden nested commentary must not be public",
+            },
+            { type: "refusal", refusal: "safe refusal" },
+          ],
+        },
+        {
+          id: "msg_commentary",
+          type: "message",
+          role: "assistant",
+          phase: "commentary",
+          content: [
+            {
+              type: "output_text",
+              text: "hidden commentary at /srv/omniroute/private-runtime.ts:49:2",
+            },
+          ],
+        },
+        {
+          id: "msg_roleless",
+          type: "message",
+          content: [
+            {
+              type: "output_text",
+              text: "roleless output must not be public",
               annotations: [],
             },
           ],
+        },
+        {
+          id: "reasoning_private",
+          type: "reasoning",
+          encrypted_content: "sk-stream-secret-encrypted-reasoning",
+          summary: [
+            {
+              type: "summary_text",
+              text: "at /srv/omniroute/private-runtime.ts:50:2",
+            },
+          ],
+        },
+        {
+          id: "call_private",
+          type: "function_call",
+          call_id: "call_private",
+          name: "read_private_file",
+          arguments:
+            '{"path":"/srv/omniroute/private-runtime.ts","api_key":"sk-stream-secret-tool"}',
+        },
+        {
+          id: "provider_private",
+          type: "provider_diagnostics",
+          diagnostics: {
+            stack: "at /srv/omniroute/private-runtime.ts:51:2",
+            api_key: "sk-stream-secret-unknown-item",
+          },
         },
       ],
       error: {
@@ -218,12 +284,22 @@ test("Responses response.failed is projected before forwarding, logging, and onF
   assert.match(result.output, /response\.failed/);
   assert.match(result.output, /"last_error":\{/);
   assert.match(result.output, /safe partial output/);
+  assert.match(result.output, /safe refusal/);
+  assert.doesNotMatch(result.output, /"annotations"/);
+  assert.doesNotMatch(result.output, /hidden nested commentary must not be public/);
+  assert.doesNotMatch(result.output, /roleless output must not be public/);
   assert.match(result.output, /"cached_tokens":1/);
   assert.doesNotMatch(result.output, /\[truncated\]/);
   assertNoHostileDetail(result.output);
   assertNoHostileDetail(convertedLog.join("\n"));
-  assert.doesNotMatch(result.output, /"diagnosis"|"settings"/);
-  assert.doesNotMatch(convertedLog.join("\n"), /"diagnosis"|"settings"/);
+  assert.doesNotMatch(
+    result.output,
+    /"diagnosis"|"diagnostics"|"settings"|"encrypted_content"|"function_call"|"provider_diagnostics"|"phase"|"url_citation"/
+  );
+  assert.doesNotMatch(
+    convertedLog.join("\n"),
+    /"diagnosis"|"diagnostics"|"settings"|"encrypted_content"|"function_call"|"provider_diagnostics"|"phase"|"url_citation"/
+  );
   assert.ok(result.failure);
   assert.match(result.failure.message, /private-runtime\.ts/);
   assertNoHostileDetail(String(result.error));

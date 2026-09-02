@@ -1,5 +1,6 @@
 import { FORMATS } from "../translator/formats.ts";
 import { buildErrorBody, sanitizeErrorMessage } from "./error.ts";
+import { projectResponsesFailureOutput } from "./responsesFailureOutput.ts";
 
 /**
  * Upstream stream-failure normalization + client-format error framing.
@@ -22,6 +23,24 @@ export type ProjectedStreamFailureEvent = {
   publicMessage: string;
   publicPayload: JsonRecord;
 };
+
+export type PreparedTranslatedStreamFailure = {
+  record: JsonRecord;
+  providerPayload: JsonRecord;
+  internalFailure: StreamFailurePayload;
+  publicMessage: string;
+};
+
+export function projectCompletedStreamError(
+  failure: StreamFailurePayload | null | undefined
+): JsonRecord | null {
+  if (!failure) return null;
+  const status = Number.isInteger(failure.status) ? failure.status : 502;
+  return buildErrorBody(status, failure.message, undefined, {
+    type: failure.type ?? "server_error",
+    code: String(failure.status ?? 502),
+  }).error;
+}
 
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
@@ -106,7 +125,12 @@ function projectResponsesFailureObject(response: JsonRecord, publicError: JsonRe
     else if (value === null || typeof value === "number" || typeof value === "boolean")
       projected[key] = value;
   }
-  if (Array.isArray(response.output)) projected.output = response.output;
+  if (Array.isArray(response.output)) {
+    projected.output = projectResponsesFailureOutput(
+      response.output,
+      projectResponsesFailureString
+    );
+  }
   const usage = projectResponsesFailureUsage(response.usage);
   if (usage) projected.usage = usage;
   if ("last_error" in response) projected.last_error = publicError;
@@ -178,6 +202,26 @@ export function normalizeStreamFailurePayload(payload: unknown): StreamFailurePa
     message,
     code,
     ...(type ? { type } : {}),
+  };
+}
+
+export function prepareTranslatedStreamFailure(
+  payload: unknown
+): PreparedTranslatedStreamFailure | null {
+  const record = asRecord(payload);
+  const projected = projectStreamFailureEvent(record);
+  if (!projected && !record.error) return null;
+  return {
+    record,
+    providerPayload: projected?.publicPayload ?? record,
+    internalFailure: projected?.internalFailure ??
+      normalizeStreamFailurePayload(record) ?? {
+        status: 502,
+        message: "Upstream failure",
+        code: "stream_error",
+        type: "server_error",
+      },
+    publicMessage: projected?.publicMessage || "Upstream failure",
   };
 }
 

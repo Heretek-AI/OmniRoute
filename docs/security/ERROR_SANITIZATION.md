@@ -169,8 +169,8 @@ Every field is projected onto the bounded public-identifier vocabulary. Unsafe, 
 control-character, or overlong values fall back to the status-derived type/code; an unsafe optional
 reason is omitted. Three-digit HTTP status identifiers (`100` through `599`) remain valid for
 provider contracts that expose the numeric upstream status as a machine-readable code. The same
-bounded range is accepted in the locally generated `HTTP_NNN` form; arbitrary provider numbers and
-names remain outside the vocabulary.
+bounded range is accepted in the locally generated HTTP-status placeholder form; arbitrary provider
+numbers and names remain outside the vocabulary.
 
 Pass every explicit classification in that fourth argument. Never overwrite
 `body.error.code`, `body.error.type`, or `body.error.reason` after `buildErrorBody()` returns;
