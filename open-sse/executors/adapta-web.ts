@@ -5,6 +5,7 @@ import { sanitizeErrorMessage } from "../utils/error.ts";
 const ADAPTA_APP_URL = "https://agent.adapta.one";
 const ADAPTA_CLERK_URL = "https://clerk.agent.adapta.one";
 const ADAPTA_STREAM_URL = `${ADAPTA_APP_URL}/api/chat/stream/v1`;
+const ADAPTA_PUBLIC_STREAM_ERROR = `\n\n[Erro: ${sanitizeErrorMessage("Adapta upstream error")}]`;
 
 // Default model ID in Adapta's internal system (corresponds to "ONE" / auto-select)
 const DEFAULT_AI_MODEL_ID = 14;
@@ -308,10 +309,9 @@ function transformStream(adaptaStream: ReadableStream, model: string): ReadableS
               if (event.id === "quick-response") continue;
               // Real text ended — stream will send more events or close
             } else if (type === "error") {
-              const errText = String(event.errorText ?? "Adapta upstream error");
               ensureRole();
-              // Emit the error as content so the user sees it
-              chunk({ content: `\n\n[Erro: ${errText}]` });
+              // Keep upstream diagnostics private: the transformed SSE is a public HTTP 200 body.
+              chunk({ content: ADAPTA_PUBLIC_STREAM_ERROR });
               finalize();
               return;
             } else if (type === "done" || type === "end") {
