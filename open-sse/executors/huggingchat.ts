@@ -400,13 +400,15 @@ export class HuggingChatExecutor extends BaseExecutor {
         };
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
       log?.error?.("HUGGINGCHAT", `Conversation creation failed: ${message}`);
       return {
         response: new Response(
-          JSON.stringify({
-            error: { message: `HuggingChat connection failed: ${message}`, type: "upstream_error" },
-          }),
+          JSON.stringify(
+            buildErrorBody(502, `HuggingChat connection failed: ${message}`, undefined, {
+              type: "upstream_error",
+            })
+          ),
           { status: 502, headers: { "Content-Type": "application/json" } }
         ),
         url: CONVERSATION_URL,
@@ -463,13 +465,15 @@ export class HuggingChatExecutor extends BaseExecutor {
         signal: combinedSignal,
       });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
       log?.error?.("HUGGINGCHAT", `Message send failed: ${message}`);
       return {
         response: new Response(
-          JSON.stringify({
-            error: { message: `HuggingChat connection failed: ${message}`, type: "upstream_error" },
-          }),
+          JSON.stringify(
+            buildErrorBody(502, `HuggingChat connection failed: ${message}`, undefined, {
+              type: "upstream_error",
+            })
+          ),
           { status: 502, headers: { "Content-Type": "application/json" } }
         ),
         url: messageUrl,
