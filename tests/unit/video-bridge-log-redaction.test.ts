@@ -11,6 +11,15 @@
 // and the caller's own `body` object is never mutated in the process (the
 // model already received the untouched original earlier in the request
 // lifecycle; this call must not reach back and change it).
+//
+// #12150 fix round 1 (adversarial review, CRITICAL): also proves the
+// content-address fix for the positional-drift bug — real request-mutation
+// stages (injectSystemPrompt's "no existing system message" branch,
+// context-relay handoff injection, reasoning-rule body rewrites) can
+// prepend/splice messages between the guardrail's preCall and this log
+// write, making a stale (messageIndex, partIndex) point at the wrong message
+// or an out-of-bounds slot. applyVideoBridgeLogRedaction must locate the
+// video part by matching `fullText` against part text, not by position.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -25,6 +34,7 @@ const { getCallLogById } = await import("../../src/lib/usage/callLogs.ts");
 const { persistAttemptLogs } = await import("../../open-sse/handlers/chatCore/attemptLogging.ts");
 
 const SECRET = "secret words";
+const FULL_TEXT = `[Video 1]: A person talks. transcript[00:00-00:02]: ${SECRET}`;
 const PLACEHOLDER_TEXT =
   "[Video 1]: A person talks. transcript[00:00-00:02]: [redacted-video-transcript]";
 
@@ -39,7 +49,7 @@ function videoBody() {
           { type: "text", text: "look at this video" },
           {
             type: "text",
-            text: `[Video 1]: A person talks. transcript[00:00-00:02]: ${SECRET}`,
+            text: FULL_TEXT,
           },
         ],
       },
@@ -105,7 +115,13 @@ test("persisted requestBody carries the placeholder and never the raw transcript
     baseCtx({
       pendingRequestId: id,
       videoBridgeLogRedaction: [
-        { container: "messages", messageIndex: 1, partIndex: 1, redactedText: PLACEHOLDER_TEXT },
+        {
+          container: "messages",
+          messageIndex: 1,
+          partIndex: 1,
+          fullText: FULL_TEXT,
+          redactedText: PLACEHOLDER_TEXT,
+        },
       ],
     })
   );
@@ -146,7 +162,13 @@ test("the caller's body object is never mutated by the redaction", async () => {
       pendingRequestId: id,
       body,
       videoBridgeLogRedaction: [
-        { container: "messages", messageIndex: 1, partIndex: 1, redactedText: PLACEHOLDER_TEXT },
+        {
+          container: "messages",
+          messageIndex: 1,
+          partIndex: 1,
+          fullText: FULL_TEXT,
+          redactedText: PLACEHOLDER_TEXT,
+        },
       ],
     })
   );
@@ -155,5 +177,81 @@ test("the caller's body object is never mutated by the redaction", async () => {
     body,
     snapshotBefore,
     "ctx.body must be byte-identical after persistAttemptLogs runs"
+  );
+});
+
+test("Scenario A (adversarial review): a message prepended AFTER the guardrail built the redaction map does not leak the transcript, and the prepended message is untouched", async () => {
+  const id = "video-scenario-a-1";
+
+  // The body exactly as the video-bridge guardrail saw it when it computed
+  // the redaction map: a single user message, no system message yet — this
+  // is precisely the shape that makes injectSystemPrompt's "no existing
+  // system message" branch (open-sse/services/systemPrompt.ts) fire.
+  const userMessageWithVideo = {
+    role: "user",
+    content: [
+      { type: "text", text: "look at this video" },
+      { type: "text", text: FULL_TEXT },
+    ],
+  };
+  // The map the guardrail built, correct AT THAT MOMENT: the video part was
+  // messages[0].content[1].
+  const redactionMap = [
+    {
+      container: "messages" as const,
+      messageIndex: 0,
+      partIndex: 1,
+      fullText: FULL_TEXT,
+      redactedText: PLACEHOLDER_TEXT,
+    },
+  ];
+
+  // Real production shape: AFTER the guardrail ran, injectSystemPrompt found
+  // no existing system/developer message and unshifted a brand-new one —
+  // `result.messages = [{ role: "system", content: combined }, ...result.messages]`
+  // — shifting the video message from index 0 to index 1. The map above is
+  // now stale by the time persistAttemptLogs serializes the log: a purely
+  // positional lookup at (messageIndex: 0, partIndex: 1) would land on this
+  // new system message instead.
+  const bodyAfterSystemPromptInjection = {
+    messages: [{ role: "system", content: "You are a helpful assistant." }, userMessageWithVideo],
+  };
+
+  persistAttemptLogs(
+    { status: 200 },
+    baseCtx({
+      pendingRequestId: id,
+      body: bodyAfterSystemPromptInjection,
+      videoBridgeLogRedaction: redactionMap,
+    })
+  );
+
+  const row = await pollForCallLog(id);
+  assert.ok(row, "call log row should be persisted");
+  const persisted = row.requestBody as {
+    messages: Array<{ role: string; content: unknown }>;
+  };
+
+  // (A) the leak: the video part, now shifted to index 1, must still be
+  // found and redacted by content, not silently skipped.
+  const shiftedContent = persisted.messages[1].content as Array<{ text: string }>;
+  assert.equal(
+    shiftedContent[1].text,
+    PLACEHOLDER_TEXT,
+    "the shifted video part must still be redacted despite the stale positional map"
+  );
+  assert.ok(
+    !shiftedContent[1].text.includes(SECRET),
+    "the shifted video part must not leak the raw transcript"
+  );
+  assert.equal(JSON.stringify(persisted).includes(SECRET), false);
+
+  // (B) the corruption: the newly prepended system message — which a
+  // positional lookup at the stale index would have landed on — must be
+  // completely untouched.
+  assert.equal(
+    persisted.messages[0].content,
+    "You are a helpful assistant.",
+    "the prepended system message must be untouched"
   );
 });

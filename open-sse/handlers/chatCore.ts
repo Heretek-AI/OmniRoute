@@ -123,12 +123,7 @@ export {
   buildStreamingResponseHeaders,
   stripStaleForwardingHeaders,
 };
-import {
-  extractMemoryTextFromResponse,
-  extractMemoryTextFromRequestBody,
-  resolveMemoryOwnerId,
-  shouldExtractMemory,
-} from "./chatCore/memoryExtraction.ts";
+import { resolveMemoryOwnerId, runMemoryExtractionGate } from "./chatCore/memoryExtraction.ts";
 import { CORS_HEADERS } from "../utils/cors.ts";
 import { checkResourcePressureGuard } from "../utils/resourcePressure.ts";
 import { normalizeHeaders } from "../utils/headers.ts";
@@ -555,8 +550,9 @@ export async function handleChatCore({
 }) {
   let { provider, model, extendedContext } = modelInfo;
   // #12150 P1b: true iff the video-bridge guardrail rendered >=1 transcript
-  // cue into a replaced part of this request. Gates request-derived Memory
-  // extraction (chatCore/memoryExtraction.ts::shouldExtractMemory).
+  // cue into a replaced part of this request. Gates both request- and
+  // response-derived Memory extraction
+  // (chatCore/memoryExtraction.ts::runMemoryExtractionGate).
   const videoBridgeObserved: boolean =
     (videoBridgeLog as VideoBridgeLogParam | undefined)?.observed === true;
   const resilienceSettings = resolveResilienceSettings(cachedSettings);
@@ -5163,36 +5159,22 @@ export async function handleChatCore({
       }
     );
 
-    if (memoryOwnerId && memorySettings?.enabled && memorySettings.maxTokens > 0) {
-      // #12150 P1b surface 3: a video-bridge-observed request's request-derived
-      // text is a flattened transcript description, not user-authored
-      // conversation — never persist it into durable Memory. The
-      // response-derived extraction just below (the model's own reply) is
-      // unaffected — out of scope for this gap-closure task.
-      if (
-        shouldExtractMemory({
-          enabled: memorySettings.enabled,
-          maxTokens: memorySettings.maxTokens,
-          memoryOwnerId,
-          videoBridgeObserved,
-        })
-      ) {
-        const requestMemoryText = extractMemoryTextFromRequestBody(body as Record<string, unknown>);
-        if (requestMemoryText) {
-          extractFacts(requestMemoryText, memoryOwnerId, pipelineSessionId);
-        }
-      } else if (videoBridgeObserved) {
-        log?.debug?.(
-          "MEMORY",
-          "Skipping request-derived memory extraction: video-bridge transcript observed"
-        );
-      }
-
-      const memoryText = extractMemoryTextFromResponse(memoryExtractionResponse);
-      if (memoryText) {
-        extractFacts(memoryText, memoryOwnerId, pipelineSessionId);
-      }
-    }
+    // #12150 P1b surface 3 (fix round 1): a video-bridge-observed request's
+    // request- AND response-derived text both carry the full transcript (the
+    // flattened description on the request side, the model's own reply on
+    // the response side) — neither may populate durable Memory. See
+    // runMemoryExtractionGate for the shared gate + extraction wiring, unit
+    // tested directly in tests/unit/video-bridge-memory-suppression.test.ts.
+    runMemoryExtractionGate({
+      memoryOwnerId,
+      memorySettings,
+      videoBridgeObserved,
+      pipelineSessionId,
+      requestBody: body as Record<string, unknown>,
+      responseBody: memoryExtractionResponse as Record<string, unknown> | null,
+      extractFacts,
+      log,
+    });
 
     const customSkillExecutionEnabled =
       Boolean(memoryOwnerId) && memorySettings?.skillsEnabled === true;
@@ -5806,40 +5788,20 @@ export async function handleChatCore({
     });
     // === /Quota Share POST-hook streaming ===
 
-    if (
-      memoryOwnerId &&
-      memorySettings?.enabled &&
-      memorySettings.maxTokens > 0 &&
-      streamStatus === 200
-    ) {
-      // #12150 P1b surface 3: see the matching non-streaming gate above —
-      // suppresses only the request-derived extraction for an observed
-      // request; the streamed-response extraction just below is unaffected.
-      if (
-        shouldExtractMemory({
-          enabled: memorySettings.enabled,
-          maxTokens: memorySettings.maxTokens,
-          memoryOwnerId,
-          videoBridgeObserved,
-        })
-      ) {
-        const requestMemoryText = extractMemoryTextFromRequestBody(body as Record<string, unknown>);
-        if (requestMemoryText) {
-          extractFacts(requestMemoryText, memoryOwnerId, pipelineSessionId);
-        }
-      } else if (videoBridgeObserved) {
-        log?.debug?.(
-          "MEMORY",
-          "Skipping request-derived memory extraction: video-bridge transcript observed"
-        );
-      }
-
-      const streamedMemoryText = extractMemoryTextFromResponse(
-        (streamResponseBody ?? null) as Record<string, unknown> | null
-      );
-      if (streamedMemoryText) {
-        extractFacts(streamedMemoryText, memoryOwnerId, pipelineSessionId);
-      }
+    if (streamStatus === 200) {
+      // #12150 P1b surface 3 (fix round 1): see the matching non-streaming
+      // gate above — an observed request populates NO durable memory from
+      // either the request-derived text or this streamed response.
+      runMemoryExtractionGate({
+        memoryOwnerId,
+        memorySettings,
+        videoBridgeObserved,
+        pipelineSessionId,
+        requestBody: body as Record<string, unknown>,
+        responseBody: (streamResponseBody ?? null) as Record<string, unknown> | null,
+        extractFacts,
+        log,
+      });
     }
 
     // Semantic cache: store assembled streaming response for future cache hits

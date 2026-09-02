@@ -35,6 +35,21 @@ import { attachLogMeta } from "./cacheUsageMeta.ts";
  * original objects. Returns `body` unchanged (same reference, no allocation)
  * when there is nothing to redact, so the common non-video path is
  * byte-identical to before this function existed.
+ *
+ * #12150 fix round 1 (adversarial review, CRITICAL): matches by CONTENT
+ * (`entry.fullText === part.text`), never by `entry.messageIndex`/
+ * `entry.partIndex`. Those positions are computed by the guardrail's preCall,
+ * but request-mutation stages that run AFTER it and BEFORE this log write —
+ * `injectSystemPrompt` (prepends a message when no system/developer message
+ * exists), context-relay handoff injection, reasoning-rule body rewrites —
+ * can prepend or splice the message array, silently invalidating any
+ * positional index. A stale index either misses the real part (the
+ * transcript is logged unredacted) or, worse, lands on and overwrites an
+ * unrelated legitimate message. Scanning every part in the named container
+ * for an exact text match finds the video part wherever it ended up and
+ * never touches a part whose text differs — see
+ * `tests/unit/video-bridge-log-redaction.test.ts`'s "Scenario A" test for the
+ * reproduction this fixes.
  */
 export function applyVideoBridgeLogRedaction(
   body: unknown,
@@ -44,45 +59,64 @@ export function applyVideoBridgeLogRedaction(
   if (!body || typeof body !== "object") return body;
 
   const source = body as Record<string, unknown>;
-  const clone: Record<string, unknown> = { ...source };
+  let rootClone: Record<string, unknown> | null = null;
+  let redacted = false;
   const clonedContainers = new Map<string, unknown[]>();
   const clonedMessages = new Map<string, Record<string, unknown>>();
 
   for (const entry of redaction) {
-    const { container, messageIndex, partIndex, redactedText } = entry;
+    const { container, fullText, redactedText } = entry;
+    if (typeof fullText !== "string" || fullText.length === 0) continue;
     const originalContainer = source[container];
     if (!Array.isArray(originalContainer)) continue;
+    // Mirrors the exact `type` replaceVideoParts() writes for this container
+    // (videoBridgeHelpers.ts) — a stronger anchor than a loose "text-like"
+    // check, at zero extra cost.
+    const expectedPartType = container === "input" ? "input_text" : "text";
 
-    let containerClone = clonedContainers.get(container);
-    if (!containerClone) {
-      containerClone = [...originalContainer];
-      clonedContainers.set(container, containerClone);
-      clone[container] = containerClone;
+    for (let messageIndex = 0; messageIndex < originalContainer.length; messageIndex++) {
+      const originalMessage = originalContainer[messageIndex];
+      if (!originalMessage || typeof originalMessage !== "object") continue;
+      const originalContent = (originalMessage as Record<string, unknown>).content;
+      if (!Array.isArray(originalContent)) continue;
+
+      for (let partIndex = 0; partIndex < originalContent.length; partIndex++) {
+        const originalPart = originalContent[partIndex];
+        if (!originalPart || typeof originalPart !== "object") continue;
+        const partRecord = originalPart as Record<string, unknown>;
+        if (partRecord.type !== expectedPartType) continue;
+        if (partRecord.text !== fullText) continue;
+
+        // Content-address match — clone the path down to this part lazily
+        // (root -> container array -> this message -> its content array),
+        // leaving every other sibling on the original references.
+        if (!rootClone) rootClone = { ...source };
+        let containerClone = clonedContainers.get(container);
+        if (!containerClone) {
+          containerClone = [...originalContainer];
+          clonedContainers.set(container, containerClone);
+          rootClone[container] = containerClone;
+        }
+
+        const messageKey = `${container}:${messageIndex}`;
+        let messageClone = clonedMessages.get(messageKey);
+        if (!messageClone) {
+          messageClone = {
+            ...(originalMessage as Record<string, unknown>),
+            content: [...originalContent],
+          };
+          clonedMessages.set(messageKey, messageClone);
+          containerClone[messageIndex] = messageClone;
+        }
+
+        const contentClone = messageClone.content as unknown[];
+        contentClone[partIndex] = { ...partRecord, text: redactedText };
+        redacted = true;
+      }
     }
-
-    const originalMessage = originalContainer[messageIndex];
-    if (!originalMessage || typeof originalMessage !== "object") continue;
-    const originalContent = (originalMessage as Record<string, unknown>).content;
-    if (!Array.isArray(originalContent)) continue;
-
-    const messageKey = `${container}:${messageIndex}`;
-    let messageClone = clonedMessages.get(messageKey);
-    if (!messageClone) {
-      messageClone = {
-        ...(originalMessage as Record<string, unknown>),
-        content: [...originalContent],
-      };
-      clonedMessages.set(messageKey, messageClone);
-      containerClone[messageIndex] = messageClone;
-    }
-
-    const contentClone = messageClone.content as unknown[];
-    const originalPart = originalContent[partIndex];
-    if (!originalPart || typeof originalPart !== "object") continue;
-    contentClone[partIndex] = { ...(originalPart as Record<string, unknown>), text: redactedText };
   }
 
-  return clone;
+  return redacted && rootClone ? rootClone : body;
 }
 
 /**

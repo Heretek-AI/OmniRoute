@@ -1,25 +1,25 @@
 // tests/unit/video-bridge-memory-suppression.test.ts
 // P1b of #12150 (Video Bridge transcript retention) — surface 3 (Memory sink).
 //
-// chatCore.ts gates its two extractFacts(requestMemoryText, ...) call sites
-// (non-streaming ~L5134, streaming ~L5758) on an inline
-// `memoryOwnerId && memorySettings?.enabled && memorySettings.maxTokens > 0`
-// check. This adds a fourth condition — the request must not be a
-// video-bridge-observed one — extracted to a pure, exported decision function
-// so it is unit-testable without invoking the handleChatCore monolith (same
-// god-file-decomposition convention as chatCore/attemptLogging.ts,
-// chatCore/nonStreamingUsageStats.ts, etc.).
+// chatCore.ts's two Memory-extraction call sites (non-streaming + streaming)
+// now each delegate to a single `runMemoryExtractionGate` (extracted so this
+// wiring — not just the underlying `shouldExtractMemory` decision — is
+// unit-testable against the REAL extractMemoryTextFromRequestBody/
+// extractMemoryTextFromResponse, same god-file-decomposition convention as
+// chatCore/attemptLogging.ts, chatCore/nonStreamingUsageStats.ts, etc.).
 //
-// Only the REQUEST-derived extractFacts call is gated (per the design doc,
-// "surface 3: gate extractFacts on !videoBridgeObserved for request-derived
-// text") — the response-derived extractFacts call (the model's own reply) is
-// out of scope and untouched.
+// #12150 fix round 1 (adversarial review, Important): a video-bridge-observed
+// request must populate NO durable memory from EITHER source — the
+// request-derived text (a flattened transcript description) AND the
+// response-derived text (the model's own reply, which also received the full
+// transcript and can echo it back). Both are gated by the same
+// shouldExtractMemory() decision inside runMemoryExtractionGate.
 import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
   shouldExtractMemory,
-  extractMemoryTextFromRequestBody,
+  runMemoryExtractionGate,
 } from "../../open-sse/handlers/chatCore/memoryExtraction.ts";
 
 // ─── shouldExtractMemory: pure decision table ──────────────────────────────
@@ -95,45 +95,14 @@ test("shouldExtractMemory: still false when memoryOwnerId is null, regardless of
   );
 });
 
-// ─── Integration stub: wire the real decision + the real request-text ─────
-// extractor together against a stubbed extractFacts, mirroring the exact
-// shape of the two chatCore.ts call sites (only the DB-writing extractFacts
-// is stubbed — everything else is the real exported implementation).
+// ─── runMemoryExtractionGate: the REAL chatCore.ts call-site wiring ────────
+// No hand-mirrored stub — this imports and calls the exact function both
+// chatCore.ts completion paths call. Only `extractFacts` (the DB-writing,
+// fire-and-forget side effect) is injected as a spy; extraction of the
+// request/response text runs through the real
+// extractMemoryTextFromRequestBody/extractMemoryTextFromResponse.
 
-function runRequestMemoryExtractionStub(params: {
-  memoryOwnerId: string | null;
-  memorySettings: { enabled: boolean; maxTokens: number };
-  videoBridgeObserved: boolean;
-  body: Record<string, unknown>;
-  pipelineSessionId: string;
-  extractFactsSpy: (text: string, ownerId: string, sessionId: string) => void;
-}): void {
-  const {
-    memoryOwnerId,
-    memorySettings,
-    videoBridgeObserved,
-    body,
-    pipelineSessionId,
-    extractFactsSpy,
-  } = params;
-  if (memoryOwnerId && memorySettings?.enabled && memorySettings.maxTokens > 0) {
-    if (
-      shouldExtractMemory({
-        enabled: memorySettings.enabled,
-        maxTokens: memorySettings.maxTokens,
-        memoryOwnerId,
-        videoBridgeObserved,
-      })
-    ) {
-      const requestMemoryText = extractMemoryTextFromRequestBody(body);
-      if (requestMemoryText) {
-        extractFactsSpy(requestMemoryText, memoryOwnerId, pipelineSessionId);
-      }
-    }
-  }
-}
-
-const flattenedVideoBody = {
+const flattenedVideoRequestBody = {
   messages: [
     {
       role: "user",
@@ -142,29 +111,111 @@ const flattenedVideoBody = {
   ],
 };
 
-test("integration stub: zero extractFacts calls for a video-bridge-observed request", () => {
+const modelReplyEchoingTranscript = {
+  choices: [
+    {
+      message: {
+        content: "Sure — the video shows: secret words",
+      },
+    },
+  ],
+};
+
+function spy() {
   const calls: Array<[string, string, string]> = [];
-  runRequestMemoryExtractionStub({
+  return {
+    calls,
+    fn: (text: string, ownerId: string, sessionId: string) => {
+      calls.push([text, ownerId, sessionId]);
+    },
+  };
+}
+
+test("runMemoryExtractionGate: zero extractFacts calls (request AND response) for a video-bridge-observed request", () => {
+  const extractFacts = spy();
+  runMemoryExtractionGate({
     memoryOwnerId: "key-1",
     memorySettings: { enabled: true, maxTokens: 2000 },
     videoBridgeObserved: true,
-    body: flattenedVideoBody,
     pipelineSessionId: "session-1",
-    extractFactsSpy: (text, ownerId, sessionId) => calls.push([text, ownerId, sessionId]),
+    requestBody: flattenedVideoRequestBody,
+    responseBody: modelReplyEchoingTranscript,
+    extractFacts: extractFacts.fn,
   });
-  assert.equal(calls.length, 0, "extractFacts must not be called when videoBridgeObserved=true");
+  assert.equal(
+    extractFacts.calls.length,
+    0,
+    "extractFacts must not be called for either source when videoBridgeObserved=true"
+  );
 });
 
-test("integration stub: extractFacts IS called for the same body when video-bridge was not observed", () => {
-  const calls: Array<[string, string, string]> = [];
-  runRequestMemoryExtractionStub({
+test("runMemoryExtractionGate: response-derived extraction specifically is skipped when observed (fix round 1 regression)", () => {
+  const extractFacts = spy();
+  runMemoryExtractionGate({
+    memoryOwnerId: "key-1",
+    memorySettings: { enabled: true, maxTokens: 2000 },
+    videoBridgeObserved: true,
+    pipelineSessionId: "session-1",
+    // No request-derived text at all (e.g. request body already consumed/
+    // reshaped) — isolates the assertion to the response-derived source,
+    // which is the one fix round 1 found still leaking into Memory.
+    requestBody: { messages: [] },
+    responseBody: modelReplyEchoingTranscript,
+    extractFacts: extractFacts.fn,
+  });
+  assert.equal(
+    extractFacts.calls.length,
+    0,
+    "the model's reply (which also received the full transcript) must not be extracted when observed"
+  );
+});
+
+test("runMemoryExtractionGate: extracts BOTH request and response text when video-bridge was not observed", () => {
+  const extractFacts = spy();
+  runMemoryExtractionGate({
     memoryOwnerId: "key-1",
     memorySettings: { enabled: true, maxTokens: 2000 },
     videoBridgeObserved: false,
-    body: flattenedVideoBody,
     pipelineSessionId: "session-1",
-    extractFactsSpy: (text, ownerId, sessionId) => calls.push([text, ownerId, sessionId]),
+    requestBody: flattenedVideoRequestBody,
+    responseBody: { choices: [{ message: { content: "a normal reply" } }] },
+    extractFacts: extractFacts.fn,
   });
-  assert.equal(calls.length, 1, "extractFacts must run on the ordinary (non-video) path");
-  assert.match(calls[0][0], /secret words/);
+  assert.equal(
+    extractFacts.calls.length,
+    2,
+    "both request- and response-derived extraction run on the ordinary (non-video) path"
+  );
+  assert.match(extractFacts.calls[0][0], /secret words/);
+  assert.match(extractFacts.calls[1][0], /a normal reply/);
+  assert.equal(extractFacts.calls[0][1], "key-1");
+  assert.equal(extractFacts.calls[0][2], "session-1");
+});
+
+test("runMemoryExtractionGate: no-ops when memory is disabled, regardless of videoBridgeObserved", () => {
+  const extractFacts = spy();
+  runMemoryExtractionGate({
+    memoryOwnerId: "key-1",
+    memorySettings: { enabled: false, maxTokens: 2000 },
+    videoBridgeObserved: false,
+    pipelineSessionId: "session-1",
+    requestBody: flattenedVideoRequestBody,
+    responseBody: { choices: [{ message: { content: "a normal reply" } }] },
+    extractFacts: extractFacts.fn,
+  });
+  assert.equal(extractFacts.calls.length, 0);
+});
+
+test("runMemoryExtractionGate: no-ops when memoryOwnerId is missing, regardless of videoBridgeObserved", () => {
+  const extractFacts = spy();
+  runMemoryExtractionGate({
+    memoryOwnerId: null,
+    memorySettings: { enabled: true, maxTokens: 2000 },
+    videoBridgeObserved: false,
+    pipelineSessionId: "session-1",
+    requestBody: flattenedVideoRequestBody,
+    responseBody: { choices: [{ message: { content: "a normal reply" } }] },
+    extractFacts: extractFacts.fn,
+  });
+  assert.equal(extractFacts.calls.length, 0);
 });

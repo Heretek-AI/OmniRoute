@@ -176,11 +176,17 @@ test("reports only validated transcript provenance in guardrail metadata and car
   // must mark itself observed and hand a redaction map keyed to the exact
   // replaced part, with the placeholder in and the secret text out.
   assert.equal(result.meta?.videoBridgeObserved, true);
+  // #12150 fix round 1: the downstream consumer matches by content
+  // (`fullText`), not by messageIndex/partIndex (see the interface doc on
+  // VideoBridgeLogRedactionEntry) — assert fullText is present and is the
+  // exact unredacted text that was placed into the part, alongside the
+  // still-positional (now advisory) fields and the placeholder text.
   assert.deepEqual(result.meta?.videoBridgeLogRedaction, [
     {
       container: "messages",
       messageIndex: 0,
       partIndex: 0,
+      fullText: "[Video description: caption; transcript[source=client] spoken words]",
       redactedText:
         "[Video description: caption; transcript[source=client] [redacted-video-transcript]]",
     },
@@ -528,8 +534,17 @@ test("real Video Bridge cache hit preserves the redacted transcript shadow acros
   for (const result of [first, second]) {
     assert.equal(result.meta?.videoBridgeObserved, true);
     const redaction = result.meta?.videoBridgeLogRedaction as
-      Array<{ redactedText: string }> | undefined;
+      Array<{ fullText: string; redactedText: string }> | undefined;
     assert.equal(redaction?.length, 1);
+    // #12150 fix round 1: fullText must be the exact unredacted text that
+    // landed in the replaced part — the content-address key the downstream
+    // consumer matches on — verified against the guardrail's own
+    // modifiedPayload rather than a hardcoded string (the rendered text
+    // here comes from the real describeVideoPart pipeline, not a fixture).
+    const modifiedPart = (result.modifiedPayload as ReturnType<typeof buildBody>).messages[0]
+      .content[0] as { text: string };
+    assert.equal(redaction?.[0]?.fullText, modifiedPart.text);
+    assert.doesNotMatch(redaction?.[0]?.fullText ?? "", /\[redacted-video-transcript\]/);
     assert.match(redaction?.[0]?.redactedText ?? "", /\[redacted-video-transcript\]/);
     assert.doesNotMatch(redaction?.[0]?.redactedText ?? "", /cached secret cue/);
   }
