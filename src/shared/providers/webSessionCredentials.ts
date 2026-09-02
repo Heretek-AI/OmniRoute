@@ -348,6 +348,8 @@ export const WEB_SESSION_CREDENTIAL_REQUIREMENTS = {
       "maxaiDeviceId",
       "userId",
       "maxaiUserId",
+    ],
+  },
   uc: {
     // UC (uncensored.com) persona: auth is the durable Clerk `__client` cookie
     // (a JWT with no exp) plus the session id + user id, all stored in
