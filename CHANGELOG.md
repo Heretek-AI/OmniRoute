@@ -97,6 +97,10 @@ _Living section — cycle opened at the v3.8.50 freeze (parallel-cycle model). B
 
 ### 🐛 Bug Fixes
 
+- **security(streaming):** sanitize generic mid-stream error messages before emitting OpenAI,
+  Responses, or Claude SSE failure frames and before diagnostic logging, while preserving raw
+  failures for internal classification and keeping client disconnects out of provider failure state.
+
 ### 📝 Maintenance
 
 ---
