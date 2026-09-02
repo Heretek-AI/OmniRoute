@@ -158,8 +158,6 @@ const lazyExecutors: Record<string, () => Promise<BaseExecutor>> = {
   db: () => import("./doubao-web.ts").then((m) => new m.DoubaoWebExecutor()), // Alias
   "zai-web": () => import("./zai-web.ts").then((m) => new m.ZaiWebExecutor()),
   zw: () => import("./zai-web.ts").then((m) => new m.ZaiWebExecutor()), // Alias
-  theoldllm: () => import("./theoldllm.ts").then((m) => new m.TheOldLlmExecutor()),
-  tllm: () => import("./theoldllm.ts").then((m) => new m.TheOldLlmExecutor()), // Alias
   chipotle: () => import("./chipotle.ts").then((m) => new m.ChipotleExecutor()),
   pepper: () => import("./chipotle.ts").then((m) => new m.ChipotleExecutor()), // Alias
   lmarena: () => import("./lmarena.ts").then((m) => new m.LMArenaExecutor()),
