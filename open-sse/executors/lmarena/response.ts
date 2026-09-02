@@ -55,8 +55,8 @@ const ARENA_PUBLIC_MESSAGES = {
   upstreamStream: "Arena upstream stream error",
 } as const;
 
-function normalizeArenaStatus(status: number, fallback: number): number {
-  return Number.isInteger(status) && status >= 200 && status <= 599 ? status : fallback;
+function normalizeArenaErrorStatus(status: number, fallback: number): number {
+  return Number.isInteger(status) && status >= 400 && status <= 599 ? status : fallback;
 }
 
 function projectArenaPublicFailure(failure: ArenaPublicFailure): ArenaProjectedPublicFailure {
@@ -69,7 +69,7 @@ function projectArenaPublicFailure(failure: ArenaPublicFailure): ArenaProjectedP
         code: "missing_cookie",
       };
     case "bot-block": {
-      const status = normalizeArenaStatus(failure.status, 403);
+      const status = normalizeArenaErrorStatus(failure.status, 403);
       let message: string;
       switch (failure.reason) {
         case "cloudflare":
@@ -94,7 +94,7 @@ function projectArenaPublicFailure(failure: ArenaPublicFailure): ArenaProjectedP
       };
     }
     case "http-status": {
-      const status = normalizeArenaStatus(failure.status, 502);
+      const status = normalizeArenaErrorStatus(failure.status, 502);
       return {
         status,
         message: `Arena API error: ${status}`,

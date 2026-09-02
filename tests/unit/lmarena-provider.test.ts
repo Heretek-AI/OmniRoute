@@ -677,6 +677,39 @@ describe("LMArena Executor", () => {
     }
   });
 
+  it("normalizes an upstream redirect before building the public error", async () => {
+    __setTlsFetchOverrideForTesting(async () => ({
+      status: 302,
+      headers: new Headers({ Location: "https://internal.arena.invalid/login" }),
+      text: "RedirectInternalFailure secret-redirect-id",
+      body: null,
+    }));
+
+    try {
+      const result = await new LMArenaExecutor().execute({
+        model: TEST_ARENA_MODEL_ID,
+        body: { messages: [{ role: "user", content: "Hello" }] },
+        credentials: { cookie: "session=test" },
+        signal: new AbortController().signal,
+        log: null,
+      });
+
+      assert.equal(result.response.status, 502);
+      const responseText = await result.response.text();
+      assert.deepEqual(JSON.parse(responseText).error, {
+        message: "Arena API error: 502",
+        type: "api_error",
+        code: "502",
+      });
+      assert.doesNotMatch(
+        responseText,
+        /RedirectInternalFailure|secret-redirect-id|internal\.arena/i
+      );
+    } finally {
+      __setTlsFetchOverrideForTesting(null);
+    }
+  });
+
   it("does not expose structured upstream error details while preserving classification", async () => {
     const executor = new LMArenaExecutor();
     __setTlsFetchOverrideForTesting(async () => ({
@@ -1166,6 +1199,50 @@ describe("LMArena Executor", () => {
     }
   });
 
+  it("does not coerce transport status metadata from the upstream stream", async () => {
+    let coercionCalls = 0;
+    const hostileStatus = {
+      [Symbol.toPrimitive]() {
+        coercionCalls += 1;
+        throw new Error("StatusCoercionFailure secret-coercion-id");
+      },
+    };
+    const streamFailure = Object.assign(new Error("upstream transport failure"), {
+      statusCode: hostileStatus,
+    });
+    __setTlsFetchOverrideForTesting(async () => ({
+      status: 200,
+      headers: new Headers({ "Content-Type": "text/event-stream" }),
+      text: null,
+      body: new ReadableStream({
+        start(controller) {
+          controller.error(streamFailure);
+        },
+      }),
+    }));
+
+    try {
+      const result = await new LMArenaExecutor().execute({
+        model: TEST_ARENA_MODEL_ID,
+        body: { messages: [{ role: "user", content: "Hello" }], stream: true },
+        stream: true,
+        credentials: { cookie: "session=test" },
+        signal: new AbortController().signal,
+        log: null,
+      });
+
+      await assert.rejects(result.response.text(), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal((error as Error & { statusCode?: unknown }).statusCode, undefined);
+        assert.equal(error.message, "Arena upstream stream error");
+        return true;
+      });
+      assert.equal(coercionCalls, 0);
+    } finally {
+      __setTlsFetchOverrideForTesting(null);
+    }
+  });
+
   it("forwards optional browser reCAPTCHA token from credentials", () => {
     const executor = new LMArenaExecutor();
     const body = access(executor).transformRequest(
@@ -1197,6 +1274,35 @@ describe("LMArena Executor", () => {
       const err = await result.response.json();
       assert.match(err.error.message, /Cloudflare|bot|recaptcha/i);
       assert.equal(err.error.code, "cloudflare_or_bot");
+    } finally {
+      __setTlsFetchOverrideForTesting(null);
+    }
+  });
+
+  it("uses an error status for a Cloudflare challenge returned with HTTP 200", async () => {
+    __setTlsFetchOverrideForTesting(async () => ({
+      status: 200,
+      headers: new Headers({ "Content-Type": "text/html" }),
+      text: "<html>Just a moment... challenges.cloudflare.com</html>",
+      body: null,
+    }));
+
+    try {
+      const result = await new LMArenaExecutor().execute({
+        model: TEST_ARENA_MODEL_ID,
+        body: { messages: [{ role: "user", content: "Hello" }] },
+        credentials: { cookie: "session=test" },
+        signal: new AbortController().signal,
+        log: null,
+      });
+
+      assert.equal(result.response.status, 403);
+      assert.deepEqual((await result.response.json()).error, {
+        message:
+          "Arena blocked by Cloudflare bot management. Use a residential/browser-grade network if needed, paste a fresh full Cookie header (include cf_clearance / __cf_bm when present), and optionally set providerSpecificData.recaptchaV3Token from a live browser session.",
+        type: "api_error",
+        code: "cloudflare_or_bot",
+      });
     } finally {
       __setTlsFetchOverrideForTesting(null);
     }
