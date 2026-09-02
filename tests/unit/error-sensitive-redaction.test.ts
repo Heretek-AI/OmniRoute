@@ -1,29 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-
-const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-error-sensitive-redaction-"));
-const originalDataDir = process.env.DATA_DIR;
-const originalPluginsDir = process.env.OMNIROUTE_PLUGINS_DIR;
-process.env.DATA_DIR = path.join(testRoot, "data");
-process.env.OMNIROUTE_PLUGINS_DIR = path.join(testRoot, "plugins");
-fs.mkdirSync(process.env.DATA_DIR, { recursive: true });
-fs.mkdirSync(process.env.OMNIROUTE_PLUGINS_DIR, { recursive: true });
-
-const core = await import("../../src/lib/db/core.ts");
-const { sanitizeErrorMessage, sanitizeUpstreamDetails } =
-  await import("../../open-sse/utils/errorSanitization.ts");
-
-test.after(() => {
-  core.resetDbInstance();
-  if (originalDataDir === undefined) delete process.env.DATA_DIR;
-  else process.env.DATA_DIR = originalDataDir;
-  if (originalPluginsDir === undefined) delete process.env.OMNIROUTE_PLUGINS_DIR;
-  else process.env.OMNIROUTE_PLUGINS_DIR = originalPluginsDir;
-  fs.rmSync(testRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-});
+import {
+  sanitizeErrorMessage,
+  sanitizeUpstreamDetails,
+} from "../../open-sse/utils/errorSanitization.ts";
 
 test("sanitizeErrorMessage removes bearer credentials and image data URLs", () => {
   const raw =

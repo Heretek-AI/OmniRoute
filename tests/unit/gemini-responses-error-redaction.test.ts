@@ -1,29 +1,7 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import test from "node:test";
-
-const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-gemini-errors-"));
-const originalDataDir = process.env.DATA_DIR;
-const originalPluginsDir = process.env.OMNIROUTE_PLUGINS_DIR;
-process.env.DATA_DIR = path.join(testRoot, "data");
-process.env.OMNIROUTE_PLUGINS_DIR = path.join(testRoot, "plugins");
-fs.mkdirSync(process.env.DATA_DIR, { recursive: true });
-fs.mkdirSync(process.env.OMNIROUTE_PLUGINS_DIR, { recursive: true });
-
-const core = await import("../../src/lib/db/core.ts");
-const { translateResponse, initState } = await import("../../open-sse/translator/index.ts");
-const { FORMATS } = await import("../../open-sse/translator/formats.ts");
-
-test.after(() => {
-  core.resetDbInstance();
-  if (originalDataDir === undefined) delete process.env.DATA_DIR;
-  else process.env.DATA_DIR = originalDataDir;
-  if (originalPluginsDir === undefined) delete process.env.OMNIROUTE_PLUGINS_DIR;
-  else process.env.OMNIROUTE_PLUGINS_DIR = originalPluginsDir;
-  fs.rmSync(testRoot, { recursive: true, force: true });
-});
+import { translateResponse, initState } from "../../open-sse/translator/index.ts";
+import { FORMATS } from "../../open-sse/translator/formats.ts";
 
 test("Gemini keeps raw failure wording internal but projects response.completed.error", () => {
   const state = initState(FORMATS.OPENAI_RESPONSES);

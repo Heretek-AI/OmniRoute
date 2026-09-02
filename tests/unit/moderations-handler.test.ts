@@ -1,18 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 
-const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-moderations-handler-"));
-const originalDataDir = process.env.DATA_DIR;
-const originalPluginsDir = process.env.OMNIROUTE_PLUGINS_DIR;
-process.env.DATA_DIR = path.join(testRoot, "data");
-process.env.OMNIROUTE_PLUGINS_DIR = path.join(testRoot, "plugins");
-fs.mkdirSync(process.env.DATA_DIR, { recursive: true });
-fs.mkdirSync(process.env.OMNIROUTE_PLUGINS_DIR, { recursive: true });
-
-const core = await import("../../src/lib/db/core.ts");
 const { handleModeration } = await import("../../open-sse/handlers/moderations.ts");
 const { MODERATION_PROVIDERS, getModerationProvider, parseModerationModel } =
   await import("../../open-sse/config/moderationRegistry.ts");
@@ -21,15 +9,6 @@ const originalFetch = globalThis.fetch;
 
 test.afterEach(() => {
   globalThis.fetch = originalFetch;
-});
-
-test.after(() => {
-  core.resetDbInstance();
-  if (originalDataDir === undefined) delete process.env.DATA_DIR;
-  else process.env.DATA_DIR = originalDataDir;
-  if (originalPluginsDir === undefined) delete process.env.OMNIROUTE_PLUGINS_DIR;
-  else process.env.OMNIROUTE_PLUGINS_DIR = originalPluginsDir;
-  fs.rmSync(testRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("MODERATION_PROVIDERS registers mistral with the Mistral moderations base URL", () => {
