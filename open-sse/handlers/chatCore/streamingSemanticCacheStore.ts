@@ -15,6 +15,7 @@ import {
   isCacheableForWrite as defaultIsCacheableForWrite,
 } from "@/lib/semanticCache";
 import { isSmallEnoughForSemanticCache as defaultIsSmallEnough } from "../../utils/estimateSize.ts";
+import { getSemanticCacheManager } from "../../services/cache/semanticCacheManager.ts";
 
 type LoggerLike = { debug?: (...args: unknown[]) => void } | null | undefined;
 
@@ -77,6 +78,18 @@ function writeStreamingCacheEntry(
       "CACHE",
       `Stored streaming response for ${args.model} (${tokensSaved} tokens)`
     );
+
+    getSemanticCacheManager()
+      .store({
+        body: args.body as Record<string, unknown>,
+        headers: args.headers,
+        response: cleanBody,
+        model: args.model,
+        provider: (cleanBody.provider as string) || "",
+        apiKeyId: args.apiKeyId,
+        tokensSaved,
+      })
+      .catch(() => {});
   } catch {
     // Cache write failed — non-critical
   }
