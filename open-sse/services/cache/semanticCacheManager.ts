@@ -21,9 +21,10 @@ import { type CacheEntry, type IVectorStore, type StoreFilter } from "./vectorSt
 import { MemoryVectorStore } from "./memoryVectorStore.ts";
 import { RedisVectorStore } from "./redisVectorStore.ts";
 import {
-  type EmbeddingGenerator,
-  generateEmbeddingWithTimeout,
   normalizeConversationForEmbedding,
+  generateEmbeddingWithTimeout,
+  createDefaultEmbeddingGenerator,
+  type EmbeddingGenerator,
 } from "./embeddingClient.ts";
 import { synthesizeOpenAiSseFromJson } from "../../utils/jsonToSse.ts";
 
@@ -171,6 +172,8 @@ export class SemanticCacheManager {
 
     if (customEmbeddingGenerator) {
       this.embeddingGenerator = customEmbeddingGenerator;
+    } else {
+      this.embeddingGenerator = createDefaultEmbeddingGenerator(this.config);
     }
   }
 

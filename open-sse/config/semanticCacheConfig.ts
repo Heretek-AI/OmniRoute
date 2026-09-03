@@ -39,6 +39,10 @@ export interface SemanticCacheConfig {
   conversationHistoryThreshold: number;
   /** If true, system prompt messages are excluded from embedding and cache keys. Defaults to false. */
   excludeSystemPrompt: boolean;
+  /** Optional custom base URL for embedding provider (e.g. http://192.168.31.147:13305/v1/embeddings). */
+  embeddingBaseUrl?: string;
+  /** Optional custom API key / Bearer token for embedding provider. */
+  embeddingApiKey?: string;
   /** Redis connection URL when backend is "redis". */
   redisUrl?: string;
   /** Key prefix for Redis cache keys. Defaults to "omniroute:semcache:". */
@@ -141,6 +145,14 @@ export function resolveSemanticCacheConfig(
       env.OMNIROUTE_SEMANTIC_CACHE_EXCLUDE_SYSTEM,
       DEFAULT_SEMANTIC_CACHE_CONFIG.excludeSystemPrompt
     ),
+    embeddingBaseUrl:
+      env.OMNIROUTE_SEMANTIC_CACHE_EMBEDDING_BASE_URL?.trim() ||
+      overrides?.embeddingBaseUrl ||
+      undefined,
+    embeddingApiKey:
+      env.OMNIROUTE_SEMANTIC_CACHE_EMBEDDING_API_KEY?.trim() ||
+      overrides?.embeddingApiKey ||
+      undefined,
     redisUrl: env.OMNIROUTE_SEMANTIC_CACHE_REDIS_URL || env.REDIS_URL || undefined,
     redisPrefix:
       env.OMNIROUTE_SEMANTIC_CACHE_REDIS_PREFIX?.trim() ||

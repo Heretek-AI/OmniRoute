@@ -285,6 +285,9 @@ export class RedisVectorStore implements IVectorStore {
     if (this.client?.quit) {
       await this.client.quit().catch(() => {});
       this.client = null;
+    } else if (this.client?.disconnect) {
+      this.client.disconnect();
+      this.client = null;
     }
   }
 }

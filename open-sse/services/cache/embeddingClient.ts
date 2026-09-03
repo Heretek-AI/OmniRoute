@@ -131,3 +131,82 @@ export async function generateEmbeddingWithTimeout(
     clearTimeout(timer);
   }
 }
+
+/**
+ * Creates a standard HTTP embedding generator against any OpenAI-compatible
+ * embeddings endpoint (e.g. Lemonade server, OpenAI, Ollama).
+ */
+export function createDefaultEmbeddingGenerator(config: {
+  embeddingProvider?: string;
+  embeddingModel?: string;
+  embeddingBaseUrl?: string;
+  embeddingApiKey?: string;
+}): EmbeddingGenerator {
+  return async (
+    text: string,
+    options?: { model?: string; provider?: string; signal?: AbortSignal }
+  ) => {
+    const model = options?.model || config.embeddingModel || "text-embedding-3-small";
+    const provider = options?.provider || config.embeddingProvider || "openai";
+
+    let targetUrl = config.embeddingBaseUrl;
+    const apiKey = config.embeddingApiKey;
+
+    if (!targetUrl) {
+      if (provider === "lemonade") {
+        targetUrl = "http://localhost:13305/v1/embeddings";
+      } else if (provider === "ollama-local") {
+        targetUrl = "http://localhost:11434/v1/embeddings";
+      }
+    }
+
+    if (!targetUrl) {
+      return null;
+    }
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    if (apiKey) {
+      headers["Authorization"] = `Bearer ${apiKey}`;
+    }
+
+    try {
+      const res = await fetch(targetUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model,
+          input: text,
+        }),
+        signal: options?.signal,
+      });
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        console.warn(`[CACHE] Default embedding request failed HTTP ${res.status}: ${errText}`);
+        return null;
+      }
+
+      const json = (await res.json()) as {
+        data?: Array<{ embedding?: number[] }>;
+        usage?: { prompt_tokens?: number; total_tokens?: number };
+      };
+
+      const vec = json?.data?.[0]?.embedding;
+      if (Array.isArray(vec) && vec.length > 0) {
+        return {
+          embedding: vec,
+          inputTokens: json?.usage?.prompt_tokens ?? 0,
+        };
+      }
+      return null;
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") {
+        console.warn("[CACHE] Default embedding fetch error:", (err as Error).message);
+      }
+      return null;
+    }
+  };
+}
