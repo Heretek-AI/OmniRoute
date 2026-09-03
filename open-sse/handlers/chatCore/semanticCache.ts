@@ -106,9 +106,11 @@ export async function checkSemanticCache({
           : synthesizeOpenAiSseFromJson(JSON.stringify(cached))
         : "";
 
-      const tokensSaved = cachedUsage
-        ? (Number(cachedUsage.prompt_tokens) || 0) + (Number(cachedUsage.completion_tokens) || 0)
-        : 0;
+      const tokensSaved = managerResult.entry
+        ? (managerResult.tokensSaved ?? 0)
+        : cachedUsage
+          ? (Number(cachedUsage.prompt_tokens) || 0) + (Number(cachedUsage.completion_tokens) || 0)
+          : 0;
 
       const headers: Record<string, string> = {
         "Content-Type": cachedSse ? "text/event-stream" : "application/json",

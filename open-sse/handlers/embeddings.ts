@@ -486,6 +486,7 @@ async function fetchClovaEmbeddingBatch(
       method: "POST",
       headers: prepared.headers,
       body: JSON.stringify(requestBody),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     lastHeaders = response.headers;
     if (!response.ok) return response;

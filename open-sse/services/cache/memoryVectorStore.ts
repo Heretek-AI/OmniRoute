@@ -37,7 +37,10 @@ export class MemoryVectorStore implements IVectorStore {
   private removeEntry(id: string): boolean {
     const existing = this.entries.get(id);
     if (!existing) return false;
-    this.hashToId.delete(existing.entry.hash);
+    // Only delete hashToId mapping if it still points to this id
+    if (this.hashToId.get(existing.entry.hash) === id) {
+      this.hashToId.delete(existing.entry.hash);
+    }
     this.entries.delete(id);
     return true;
   }
@@ -77,6 +80,12 @@ export class MemoryVectorStore implements IVectorStore {
     // If ID already exists, remove it first
     if (this.entries.has(entry.id)) {
       this.removeEntry(entry.id);
+    }
+
+    // If an existing entry shares the same direct hash, remove the older entry
+    const existingIdWithHash = this.hashToId.get(entry.hash);
+    if (existingIdWithHash && existingIdWithHash !== entry.id) {
+      this.removeEntry(existingIdWithHash);
     }
 
     this.evictOldestIfNeeded();
@@ -125,8 +134,16 @@ export class MemoryVectorStore implements IVectorStore {
       // Metadata filter checks
       if (filter.model && item.entry.model !== filter.model) continue;
       if (filter.provider && item.entry.provider !== filter.provider) continue;
-      if (filter.apiKeyId !== undefined && item.entry.apiKeyId !== filter.apiKeyId) continue;
-      if (filter.cacheKey !== undefined && item.entry.cacheKey !== filter.cacheKey) continue;
+
+      // Partition key isolation: null means must have NO key, string means exact match
+      if (filter.apiKeyId !== undefined) {
+        const expected = filter.apiKeyId === null ? undefined : filter.apiKeyId;
+        if (item.entry.apiKeyId !== expected) continue;
+      }
+      if (filter.cacheKey !== undefined) {
+        const expected = filter.cacheKey === null ? undefined : filter.cacheKey;
+        if (item.entry.cacheKey !== expected) continue;
+      }
 
       if (!item.normalizedEmbedding || item.normalizedEmbedding.length !== queryNorm.length) {
         continue;

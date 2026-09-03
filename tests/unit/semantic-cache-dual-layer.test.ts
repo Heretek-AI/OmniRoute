@@ -604,5 +604,300 @@ describe("Semantic Cache — Dual-Layer Architecture", () => {
       const res = await generateEmbeddingWithTimeout("", async () => null);
       assert.equal(res, null);
     });
+
+    it("times out uncooperative generators that ignore AbortSignal via Promise.race", async () => {
+      // Generator that never resolves and completely ignores AbortSignal
+      const hangingGenerator = () =>
+        new Promise<{ embedding: number[]; inputTokens: number }>(() => {});
+
+      const t0 = Date.now();
+      const res = await generateEmbeddingWithTimeout("hello", hangingGenerator, { timeoutMs: 50 });
+      const elapsed = Date.now() - t0;
+
+      assert.equal(res, null, "Should return null on timeout");
+      assert.ok(elapsed >= 45 && elapsed < 500, `Should resolve around 50ms, took ${elapsed}ms`);
+    });
+  });
+
+  describe("Multi-Tenant Partition Isolation", () => {
+    it("isolates anonymous requests from authenticated entries in semantic search", async () => {
+      const store = new MemoryVectorStore();
+      const manager = new SemanticCacheManager(
+        { enabled: true, similarityThreshold: 0.8 },
+        store,
+        async () => ({ embedding: [1, 0], inputTokens: 5 })
+      );
+
+      // Store entry under apiKeyId: "tenant-a"
+      await manager.store({
+        body: {
+          model: "gpt-4",
+          messages: [{ role: "user", content: "sensitive data" }],
+          temperature: 0,
+        },
+        response: { choices: [{ message: { content: "secret answer" } }] },
+        model: "gpt-4",
+        provider: "openai",
+        apiKeyId: "tenant-a",
+        tokensSaved: 10,
+      });
+
+      // Anonymous query (no apiKeyId) should MISS
+      const anonResult = await manager.lookup({
+        body: {
+          model: "gpt-4",
+          messages: [{ role: "user", content: "sensitive data paraphrase" }],
+          temperature: 0,
+        },
+        model: "gpt-4",
+        provider: "openai",
+      });
+      assert.equal(anonResult.hit, false, "Anonymous query must NOT hit tenant-a cached entry");
+
+      // Another tenant query should MISS
+      const otherTenantResult = await manager.lookup({
+        body: {
+          model: "gpt-4",
+          messages: [{ role: "user", content: "sensitive data paraphrase" }],
+          temperature: 0,
+        },
+        model: "gpt-4",
+        provider: "openai",
+        apiKeyId: "tenant-b",
+      });
+      assert.equal(
+        otherTenantResult.hit,
+        false,
+        "Tenant-b query must NOT hit tenant-a cached entry"
+      );
+
+      // Same tenant query should HIT
+      const sameTenantResult = await manager.lookup({
+        body: {
+          model: "gpt-4",
+          messages: [{ role: "user", content: "sensitive data paraphrase" }],
+          temperature: 0,
+        },
+        model: "gpt-4",
+        provider: "openai",
+        apiKeyId: "tenant-a",
+      });
+      assert.equal(sameTenantResult.hit, true, "Tenant-a query must HIT tenant-a cached entry");
+    });
+  });
+
+  describe("MemoryVectorStore Hash Index Consistency", () => {
+    it("replaces older entry when inserting a new entry with identical hash", async () => {
+      const store = new MemoryVectorStore();
+      const now = Date.now();
+
+      await store.set(
+        {
+          id: "id-old",
+          hash: "shared-hash-1",
+          promptText: "prompt 1",
+          model: "m",
+          provider: "p",
+          response: { v: 1 },
+          tokensSaved: 10,
+          createdAt: now,
+          expiresAt: now + 60000,
+        },
+        60000
+      );
+
+      // Insert newer entry with same hash but new ID
+      await store.set(
+        {
+          id: "id-new",
+          hash: "shared-hash-1",
+          promptText: "prompt 1 updated",
+          model: "m",
+          provider: "p",
+          response: { v: 2 },
+          tokensSaved: 15,
+          createdAt: now + 100,
+          expiresAt: now + 60000,
+        },
+        60000
+      );
+
+      // Old entry should be removed from store
+      assert.equal(await store.get("id-old"), null);
+      // New entry should be accessible directly and by hash
+      const byHash = await store.getByHash("shared-hash-1");
+      assert.equal(byHash?.id, "id-new");
+      assert.equal((byHash?.response as { v: number }).v, 2);
+
+      // Deleting the old ID must not delete the hash mapping for the new ID
+      await store.delete("id-old");
+      const byHashAfterOldDelete = await store.getByHash("shared-hash-1");
+      assert.equal(byHashAfterOldDelete?.id, "id-new");
+    });
+  });
+
+  describe("RedisVectorStore Stale Set Pruning & Conditional Hash Deletion", () => {
+    it("prunes expired / missing entries from candidate sets and decrements getStats", async () => {
+      const redisStorage = new Map<string, string>();
+      const setStorage = new Map<string, Set<string>>();
+
+      const mockClient: RedisLike = {
+        get: async (k: string) => redisStorage.get(k) || null,
+        set: async (k: string, v: string) => {
+          redisStorage.set(k, v);
+        },
+        del: async (...keys: string[]) => {
+          keys.forEach((k) => redisStorage.delete(k));
+          return keys.length;
+        },
+        sadd: async (k: string, ...members: string[]) => {
+          if (!setStorage.has(k)) setStorage.set(k, new Set());
+          const set = setStorage.get(k)!;
+          members.forEach((m) => set.add(m));
+          return members.length;
+        },
+        srem: async (k: string, ...members: string[]) => {
+          const set = setStorage.get(k);
+          if (!set) return 0;
+          let count = 0;
+          members.forEach((m) => {
+            if (set.delete(m)) count++;
+          });
+          return count;
+        },
+        smembers: async (k: string) => Array.from(setStorage.get(k) || []),
+        mget: async (...keys: string[]) => keys.map((k) => redisStorage.get(k) || null),
+      };
+
+      const store = new RedisVectorStore({ client: mockClient, keyPrefix: "test:" });
+      const now = Date.now();
+
+      // Store entry 1 (active)
+      await store.set(
+        {
+          id: "active-1",
+          hash: "hash-active",
+          embedding: [1, 0],
+          promptText: "active prompt",
+          model: "gpt-4",
+          provider: "openai",
+          response: { text: "active" },
+          tokensSaved: 10,
+          createdAt: now,
+          expiresAt: now + 10000,
+        },
+        10000
+      );
+
+      // Store entry 2 (expired)
+      await store.set(
+        {
+          id: "expired-2",
+          hash: "hash-expired",
+          embedding: [1, 0],
+          promptText: "expired prompt",
+          model: "gpt-4",
+          provider: "openai",
+          response: { text: "expired" },
+          tokensSaved: 10,
+          createdAt: now - 5000,
+          expiresAt: now - 1000,
+        },
+        -1000
+      );
+
+      // Simulate entry 3 that was deleted from Redis keys directly (e.g. TTL expired naturally in Redis)
+      await mockClient.sadd!("test:all_ids", "ghost-3");
+      await mockClient.sadd!("test:model:gpt-4", "ghost-3");
+
+      // getStats should count only living entries and prune expired/ghost entries
+      const stats = await store.getStats();
+      assert.equal(stats.entries, 1, "Only active-1 should be counted as live");
+
+      // searchNearest should also prune stale entries and return only active-1
+      const nearest = await store.searchNearest([1, 0], { model: "gpt-4" }, 0.8);
+      assert.equal(nearest.length, 1);
+      assert.equal(nearest[0].entry.id, "active-1");
+    });
+
+    it("conditionally deletes hash mapping only if matching the entry being deleted", async () => {
+      const redisStorage = new Map<string, string>();
+      const setStorage = new Map<string, Set<string>>();
+
+      const mockClient: RedisLike = {
+        get: async (k: string) => redisStorage.get(k) || null,
+        set: async (k: string, v: string) => {
+          redisStorage.set(k, v);
+        },
+        del: async (...keys: string[]) => {
+          keys.forEach((k) => redisStorage.delete(k));
+          return keys.length;
+        },
+        sadd: async (k: string, ...members: string[]) => {
+          if (!setStorage.has(k)) setStorage.set(k, new Set());
+          members.forEach((m) => setStorage.get(k)!.add(m));
+          return members.length;
+        },
+        srem: async (k: string, ...members: string[]) => {
+          const set = setStorage.get(k);
+          if (!set) return 0;
+          let count = 0;
+          members.forEach((m) => {
+            if (set.delete(m)) count++;
+          });
+          return count;
+        },
+        smembers: async (k: string) => Array.from(setStorage.get(k) || []),
+        mget: async (...keys: string[]) => keys.map((k) => redisStorage.get(k) || null),
+      };
+
+      const store = new RedisVectorStore({ client: mockClient, keyPrefix: "test:" });
+      const now = Date.now();
+
+      // Store entry 1
+      await store.set(
+        {
+          id: "id-1",
+          hash: "shared-hash",
+          embedding: [1, 0],
+          promptText: "prompt",
+          model: "gpt-4",
+          provider: "openai",
+          response: {},
+          tokensSaved: 5,
+          createdAt: now,
+          expiresAt: now + 60000,
+        },
+        60000
+      );
+
+      // Overwrite with entry 2 under same hash
+      await store.set(
+        {
+          id: "id-2",
+          hash: "shared-hash",
+          embedding: [1, 0],
+          promptText: "prompt",
+          model: "gpt-4",
+          provider: "openai",
+          response: {},
+          tokensSaved: 5,
+          createdAt: now + 10,
+          expiresAt: now + 60000,
+        },
+        60000
+      );
+
+      // Now attempt to delete id-1 (older entry)
+      await store.delete("id-1");
+
+      // The hash mapping in Redis must STILL point to id-2!
+      const hashKey = "test:hash:shared-hash";
+      assert.equal(
+        redisStorage.get(hashKey),
+        "id-2",
+        "Hash mapping must not be deleted by older entry deletion"
+      );
+    });
   });
 });

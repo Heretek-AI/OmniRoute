@@ -48,6 +48,7 @@ export function storeSemanticCacheResponse(
     headers: unknown;
     translatedResponse: unknown;
     model: string;
+    provider?: string;
     apiKeyId?: string;
     usage?: UsageLike;
     log?: LoggerLike;
@@ -79,7 +80,10 @@ export function storeSemanticCacheResponse(
         headers: args.headers,
         response: args.translatedResponse as Record<string, unknown>,
         model: args.model,
-        provider: ((args.translatedResponse as Record<string, unknown>).provider as string) || "",
+        provider:
+          args.provider ||
+          ((args.translatedResponse as Record<string, unknown>).provider as string) ||
+          "",
         apiKeyId: args.apiKeyId,
         tokensSaved,
       })

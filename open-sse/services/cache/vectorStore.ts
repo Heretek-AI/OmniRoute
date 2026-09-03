@@ -25,8 +25,20 @@ export interface CacheEntry {
 export interface StoreFilter {
   model?: string;
   provider?: string;
-  apiKeyId?: string;
-  cacheKey?: string;
+  /**
+   * Filter by API key ID:
+   * - string: entry must match this apiKeyId.
+   * - null: entry must have NO apiKeyId (anonymous/unkeyed).
+   * - undefined: do not filter by apiKeyId.
+   */
+  apiKeyId?: string | null;
+  /**
+   * Filter by cache key:
+   * - string: entry must match this cacheKey.
+   * - null: entry must have NO cacheKey.
+   * - undefined: do not filter by cacheKey.
+   */
+  cacheKey?: string | null;
 }
 
 export interface SimilaritySearchResult {

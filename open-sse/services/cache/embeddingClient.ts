@@ -111,14 +111,24 @@ export async function generateEmbeddingWithTimeout(
 
   const timeoutMs = options?.timeoutMs ?? 3000;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timer: NodeJS.Timeout | undefined;
+
+  const timeoutPromise = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      console.warn(`[CACHE] Embedding generation timed out after ${timeoutMs}ms`);
+      resolve(null);
+    }, timeoutMs);
+  });
 
   try {
-    const res = await generator(text, {
+    const generatorPromise = generator(text, {
       model: options?.model,
       provider: options?.provider,
       signal: controller.signal,
     });
+
+    const res = await Promise.race([generatorPromise, timeoutPromise]);
     return res;
   } catch (err) {
     const isTimeout = controller.signal.aborted;
@@ -128,7 +138,7 @@ export async function generateEmbeddingWithTimeout(
     );
     return null;
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 }
 

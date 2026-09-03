@@ -304,8 +304,8 @@ export class SemanticCacheManager {
     const filter: StoreFilter = {
       model: this.config.cacheByModel ? params.model : undefined,
       provider: this.config.cacheByProvider ? params.provider : undefined,
-      apiKeyId: params.apiKeyId || undefined,
-      cacheKey: cacheKey || undefined,
+      apiKeyId: params.apiKeyId || null,
+      cacheKey: cacheKey || null,
     };
 
     try {

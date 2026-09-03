@@ -47,6 +47,7 @@ interface StreamingCacheArgs {
   body: CacheBody;
   headers: unknown;
   model: string;
+  provider?: string;
   apiKeyId?: string;
   streamUsage?: Record<string, unknown> | null;
   log?: LoggerLike;
@@ -85,7 +86,7 @@ function writeStreamingCacheEntry(
         headers: args.headers,
         response: cleanBody,
         model: args.model,
-        provider: (cleanBody.provider as string) || "",
+        provider: args.provider || (cleanBody.provider as string) || "",
         apiKeyId: args.apiKeyId,
         tokensSaved,
       })

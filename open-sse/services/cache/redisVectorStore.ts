@@ -163,27 +163,39 @@ export class RedisVectorStore implements IVectorStore {
 
       const now = Date.now();
       const results: SimilaritySearchResult[] = [];
-      const expiredIds: string[] = [];
+      const staleIds: string[] = [];
 
       for (let i = 0; i < rawEntries.length; i++) {
         const raw = rawEntries[i];
-        if (!raw) continue;
+        if (!raw) {
+          staleIds.push(candidateIds[i]);
+          continue;
+        }
 
         let entry: CacheEntry;
         try {
           entry = JSON.parse(raw) as CacheEntry;
         } catch {
+          staleIds.push(candidateIds[i]);
           continue;
         }
 
         if (entry.expiresAt > 0 && entry.expiresAt <= now) {
-          expiredIds.push(entry.id);
+          staleIds.push(entry.id);
           continue;
         }
 
         if (filter.provider && entry.provider !== filter.provider) continue;
-        if (filter.apiKeyId !== undefined && entry.apiKeyId !== filter.apiKeyId) continue;
-        if (filter.cacheKey !== undefined && entry.cacheKey !== filter.cacheKey) continue;
+
+        // Partition key isolation: null means must have NO key, string means exact match
+        if (filter.apiKeyId !== undefined) {
+          const expected = filter.apiKeyId === null ? undefined : filter.apiKeyId;
+          if (entry.apiKeyId !== expected) continue;
+        }
+        if (filter.cacheKey !== undefined) {
+          const expected = filter.cacheKey === null ? undefined : filter.cacheKey;
+          if (entry.cacheKey !== expected) continue;
+        }
 
         if (!entry.embedding || entry.embedding.length !== queryNorm.length) continue;
 
@@ -195,9 +207,9 @@ export class RedisVectorStore implements IVectorStore {
         }
       }
 
-      // Cleanup expired IDs in background
-      if (expiredIds.length > 0) {
-        Promise.all(expiredIds.map((id) => this.delete(id))).catch(() => {});
+      // Cleanup missing or expired IDs in background
+      if (staleIds.length > 0) {
+        Promise.all(staleIds.map((id) => this.delete(id))).catch(() => {});
       }
 
       results.sort((a, b) => b.similarity - a.similarity);
@@ -217,7 +229,12 @@ export class RedisVectorStore implements IVectorStore {
       if (raw) {
         try {
           const entry = JSON.parse(raw) as CacheEntry;
-          await client.del(this.entryKey(id), this.hashKey(entry.hash));
+          // Delete hash mapping only if it still points to this entry id
+          const hashOwner = await client.get(this.hashKey(entry.hash));
+          if (hashOwner === id) {
+            await client.del(this.hashKey(entry.hash));
+          }
+          await client.del(this.entryKey(id));
           await client.srem(this.allIdsKey(), id);
           await client.srem(this.modelSetKey(entry.model), id);
           return true;
@@ -275,7 +292,37 @@ export class RedisVectorStore implements IVectorStore {
       const client = await this.getClient();
       if (!client) return { entries: 0 };
       const ids = await client.smembers(this.allIdsKey());
-      return { entries: ids ? ids.length : 0 };
+      if (!ids || ids.length === 0) return { entries: 0 };
+
+      const keys = ids.map((id) => this.entryKey(id));
+      const rawEntries = await client.mget(...keys);
+      let liveCount = 0;
+      const staleIds: string[] = [];
+      const now = Date.now();
+
+      for (let i = 0; i < rawEntries.length; i++) {
+        const raw = rawEntries[i];
+        if (!raw) {
+          staleIds.push(ids[i]);
+          continue;
+        }
+        try {
+          const entry = JSON.parse(raw) as CacheEntry;
+          if (entry.expiresAt > 0 && entry.expiresAt <= now) {
+            staleIds.push(ids[i]);
+            continue;
+          }
+          liveCount++;
+        } catch {
+          staleIds.push(ids[i]);
+        }
+      }
+
+      if (staleIds.length > 0) {
+        Promise.all(staleIds.map((id) => this.delete(id))).catch(() => {});
+      }
+
+      return { entries: liveCount };
     } catch {
       return { entries: 0 };
     }
