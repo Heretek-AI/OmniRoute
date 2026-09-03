@@ -40,8 +40,36 @@ function looksLikeAbsolutePath(tok: string): boolean {
   return (SOURCE_EXT as readonly string[]).includes(ext);
 }
 
+/**
+ * Raw credential shapes that carry no `key=` label to key off — the token IS the
+ * whole match, so the only way to redact them is to recognize the shape.
+ *
+ * GHSA-qv45-56jc-4wmj: `upstreamErrorPassthrough.ts` already recognized `sk-`
+ * and refused verbatim passthrough for bodies containing it, then handed those
+ * bodies to THIS sanitizer — which had no such pattern, so the key came back to
+ * the caller anyway. The passthrough file's comment claimed to "mirror the
+ * vocabulary of redactSensitiveErrorText"; the mirror had drifted. It now
+ * imports this array instead of keeping a second copy, so the two cannot drift
+ * again.
+ *
+ * Quantifiers are upper-bounded (AGENTS.md → PII learnings §1, ReDoS): these run
+ * over untrusted upstream error bodies.
+ */
+export const RAW_CREDENTIAL_PATTERNS: ReadonlyArray<RegExp> = [
+  // OpenAI/Anthropic/Stripe-style secret keys: sk-…, sk-ant-…, sk_live_…
+  /\bsk[-_][A-Za-z0-9._-]{8,200}/g,
+  // Google API keys
+  /\bAIza[A-Za-z0-9_-]{20,200}/g,
+  // JWTs (three base64url segments)
+  /\beyJ[A-Za-z0-9_-]{8,400}\.[A-Za-z0-9_-]{8,800}\.[A-Za-z0-9_-]{8,800}/g,
+];
+
 export function redactSensitiveErrorText(value: string): string {
-  return value
+  let out = value;
+  for (const pattern of RAW_CREDENTIAL_PATTERNS) {
+    out = out.replace(pattern, "[REDACTED_CREDENTIAL]");
+  }
+  return out
     .replace(/data:[^,\s]+;base64,[A-Za-z0-9+/=_-]+/gi, "[REDACTED_DATA_URL]")
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "$1 [REDACTED]")
     .replace(
