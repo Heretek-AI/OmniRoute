@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
 import { getCallLogById } from "@/lib/usageDb";
 import { getCompletedDetails, getPendingById } from "@/lib/usage/usageHistory";
+import {
+  extractPreviousResponseId,
+  resolveCallLogIdByResponseId,
+} from "@/lib/db/responsesContinuationStore";
 
 // Each logged chunk-array element is one raw network read, timestamp-prefixed
 // for the debug display — NOT one complete SSE `data:` line. A single JSON
@@ -159,7 +163,20 @@ export async function GET(
 
     if (!persistedRequest) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-    return NextResponse.json(persistedRequest);
+    // "Continues from" link for the dashboard's conversation panel: resolve
+    // this entry's own previous_response_id back to the call-log row that
+    // produced it. Persisted-only (apiKeyId isn't plumbed onto the
+    // pending/in-memory branches above) -- required for the same tenant
+    // scoping resolveCallLogIdByResponseId enforces, so an active/in-memory
+    // entry simply renders no parent link rather than resolving unscoped.
+    const previousResponseId = extractPreviousResponseId(
+      persistedRequest.pipelinePayloads as Record<string, unknown> | null | undefined
+    );
+    const parentLogId = previousResponseId
+      ? resolveCallLogIdByResponseId(previousResponseId, persistedRequest.apiKeyId ?? null)
+      : null;
+
+    return NextResponse.json({ ...persistedRequest, previousResponseId, parentLogId });
   } catch (err) {
     console.error("[API ERROR] /api/logs/[id] failed:", err);
     return NextResponse.json({ error: "Failed to fetch log" }, { status: 500 });

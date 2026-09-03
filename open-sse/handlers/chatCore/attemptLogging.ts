@@ -13,6 +13,7 @@
 import { extractProviderWarnings } from "@/lib/compliance/providerAudit";
 import { logAuditEvent } from "@/lib/compliance";
 import { emit } from "@/lib/events/eventBus";
+import { maybeLogToolCallSpecViolation } from "./toolCallSpecViolationAudit.ts";
 import type { RequestCompletedPayload, RequestFailedPayload } from "@/lib/events/types";
 import { saveCallLog } from "@/lib/usageDb";
 import type { VideoBridgeLogRedactionEntry } from "@/lib/guardrails/videoBridge";
@@ -391,6 +392,15 @@ export function persistAttemptLogs(args: PersistAttemptLogsArgs, ctx: PersistAtt
       },
     });
   }
+
+  maybeLogToolCallSpecViolation({
+    responseBody,
+    provider,
+    model,
+    connectionId: finalConnectionId,
+    httpStatus: status,
+    requestId: skillRequestId,
+  });
 
   const capturedPipeline = reqLogger?.getPipelinePayloads?.() ?? null;
   const pipelinePayloads = detailedLoggingEnabled

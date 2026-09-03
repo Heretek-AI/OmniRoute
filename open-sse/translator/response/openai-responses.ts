@@ -23,12 +23,12 @@ import {
 import { createEventEmitter } from "./openai-responses/eventEmitter.ts";
 import { buildResponsesToolCallItem } from "./responsesToolItem.ts";
 import { resolveRequestToolIdentity } from "./openai-responses/requestToolIdentity.ts";
+import { resolveLocalToolCallIndex } from "./openai-responses/toolCallLocalIndex.ts";
 import {
   synthesizeCompletedToolCalls,
   computeFinishReason,
   withAssistantRoleOnFirstDelta,
 } from "./openai-responses/synthesizeCompletedToolCalls.ts";
-
 // normalizeUpstreamFailure is re-exported for external importers (tests).
 export { normalizeUpstreamFailure } from "./openai-responses/pureHelpers.ts";
 
@@ -506,7 +506,7 @@ function toolCallOutputIndexBase(state) {
 
 function emitToolCall(state, emit, tc) {
   const tcIdx = tc.index ?? 0;
-  const outputIndex = toolCallOutputIndexBase(state) + normalizeOutputIndex(tcIdx);
+  const outputIndex = toolCallOutputIndexBase(state) + resolveLocalToolCallIndex(state, tcIdx);
   const newCallId = tc.id;
   const funcName = tc.function?.name;
 
@@ -609,7 +609,7 @@ function emitToolCall(state, emit, tc) {
 function closeToolCall(state, emit, idx, recordAsCompleted = true) {
   const callId = state.funcCallIds[idx];
   if (callId && !state.funcItemDone[idx]) {
-    const normalizedIndex = toolCallOutputIndexBase(state) + normalizeOutputIndex(idx);
+    const normalizedIndex = toolCallOutputIndexBase(state) + resolveLocalToolCallIndex(state, idx);
     const args = state.funcArgsBuf[idx] || "{}";
     const toolName = state.funcNames[idx] || "";
     // See emitToolCall()'s isCustomTool comment — must stay in sync (both compute the

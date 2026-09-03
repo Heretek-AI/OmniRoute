@@ -761,15 +761,21 @@ function CombosPageContent() {
   const [proxyConfig, setProxyConfig] = useState(null);
   const { comboProxyAssignedIds, fetchComboProxyAssignments } = useComboProxyAssignments();
   const [providerNodes, setProviderNodes] = useState([]);
-  const [showUsageGuide, setShowUsageGuide] = useState(() => {
-    // Lazy initializer instead of a mount effect (react-hooks/set-state-in-effect).
+  // SSR has no localStorage, so a lazy initializer reading it here returns a
+  // different value server-side (always "not dismissed") than the client's
+  // real stored value -- exactly the kind of source React's hydration
+  // mismatch check is built to catch, and in dev mode a mismatch forces a
+  // full client-only re-render of this tree, discarding whatever the fetch
+  // effects below had already populated. Start with the SSR-safe default on
+  // both passes and correct it client-only, after hydration, in an effect.
+  const [showUsageGuide, setShowUsageGuide] = useState(true);
+  useEffect(() => {
     try {
-      return globalThis.localStorage?.getItem(COMBO_USAGE_GUIDE_STORAGE_KEY) !== "1";
+      setShowUsageGuide(globalThis.localStorage?.getItem(COMBO_USAGE_GUIDE_STORAGE_KEY) !== "1");
     } catch {
       // Ignore storage access errors (privacy mode / restricted environments)
-      return true;
     }
-  });
+  }, []);
   const [recentlyCreatedCombo, setRecentlyCreatedCombo] = useState("");
   const [creatingKimiPreset, setCreatingKimiPreset] = useState(false);
   const [comboDragIndex, setComboDragIndex] = useState(null);

@@ -107,5 +107,129 @@ export function resolvePreviousResponseState(
   if (!Array.isArray(input) || !Array.isArray(output)) return null;
   if (containsTruncatedArrayMarker(input) || containsTruncatedArrayMarker(output)) return null;
 
+  // Live incident (2026-09-02): a huge/reasoning-heavy response can blow past
+  // createStructuredSSECollector's own event-count cap mid-stream -- the
+  // stored clientResponse then carries `_truncated: true` and
+  // `summary.status: "in_progress"` (never reached "completed") with a
+  // genuinely EMPTY `summary.output`, not a bounded array with a
+  // containsTruncatedArrayMarker sentinel (that marker only covers an
+  // array capped mid-array, not a collector that stopped before ever
+  // populating output at all). An empty output array passed the checks
+  // above and got merged into the next turn's request as this response's
+  // entire contribution -- reconstructing to zero real messages, which the
+  // upstream provider then rejected outright ("Input required: specify
+  // prompt or messages"), breaking the conversation with no client-visible
+  // continuation path. A response the client received as real (successful,
+  // non-empty) always has at least one output item; failing closed here
+  // makes the caller ask the client to resend full history instead of
+  // silently reconstructing an empty one, exactly like a real
+  // previous_response_not_found from OpenAI itself.
+  if ((clientResponse as { _truncated?: unknown } | undefined)?._truncated === true) return null;
+  if (output.length === 0) return null;
+
   return { input, output };
+}
+
+/**
+ * Resolve the call-log id that produced `responseId`, for the dashboard's
+ * "continues from" link. Reuses the same `call_logs.response_id` index and
+ * `api_key_id` tenant scoping as `resolvePreviousResponseState` above -- a
+ * parent link must never point across API keys, even just to surface its id.
+ * Returns null on any lookup miss so the caller renders no link rather than
+ * a broken one.
+ */
+export function resolveCallLogIdByResponseId(
+  responseId: string,
+  apiKeyId: string | null | undefined
+): string | null {
+  if (!responseId || !apiKeyId) return null;
+
+  const db = getDbInstance();
+  const row = db
+    .prepare(
+      `SELECT id FROM call_logs
+       WHERE response_id = ? AND api_key_id = ?
+       ORDER BY timestamp DESC LIMIT 1`
+    )
+    .get(responseId, apiKeyId) as { id: string } | undefined;
+
+  return row?.id ?? null;
+}
+
+/**
+ * Extract `previous_response_id` from a call-log's own pipeline payload.
+ * Persisted artifacts key the client's own request `clientRawRequest`; the
+ * pending/in-flight in-memory shape keys the same thing `clientRequest`
+ * instead (RequestLoggerDetail.tsx's payloadSections list carries both keys
+ * for the same reason) -- check both so callers get the same answer
+ * regardless of which shape the payload came back as.
+ */
+export function extractPreviousResponseId(
+  pipelinePayloads: Record<string, unknown> | null | undefined
+): string | null {
+  if (!pipelinePayloads) return null;
+  for (const key of ["clientRawRequest", "clientRequest"]) {
+    const envelope = pipelinePayloads[key];
+    const body = isPlainRecord(envelope) && "body" in envelope ? envelope.body : envelope;
+    if (isPlainRecord(body) && typeof body.previous_response_id === "string") {
+      return body.previous_response_id;
+    }
+  }
+  return null;
+}
+
+// isGenuineContinuationTurn is a pure function of one call-log's own
+// artifact, which is immutable once written (see callLogs.ts -- detailState
+// only flips to "ready" after the artifact is fully persisted) -- the same
+// artifactRelPath always answers the same way, forever. Without this cache,
+// the dashboard's own default auto-refresh polls the whole conversation list
+// on an interval the operator controls (down to 1s), so every tick re-reads
+// and re-parses one artifact per visible row for an answer that can never
+// change once computed. Keyed on artifactRelPath alone (1:1 with the owning
+// call-log row, so apiKeyId never varies for a given key) with simple FIFO
+// eviction -- correctness never depends on which entries survive, only on
+// staying bounded.
+const GENUINE_CONTINUATION_CACHE_MAX = 5000;
+const genuineContinuationCache = new Map<string, boolean>();
+
+function cacheGenuineContinuation(key: string, value: boolean): boolean {
+  genuineContinuationCache.set(key, value);
+  if (genuineContinuationCache.size > GENUINE_CONTINUATION_CACHE_MAX) {
+    const oldest = genuineContinuationCache.keys().next().value;
+    if (oldest !== undefined) genuineContinuationCache.delete(oldest);
+  }
+  return value;
+}
+
+/**
+ * Whether a call-log's own request genuinely continued a prior response
+ * server-side: it carried `previous_response_id` AND that id resolved to a
+ * real, same-tenant prior call-log row. Backs the /dashboard/conversations
+ * "genuine continuation" badge -- a conversation the client-side turn
+ * tracker counts as multi-turn (conversationTracker.ts's content-hash chain,
+ * independent of transport) is not necessarily one actually running on the
+ * `previous_response_id` wire optimization; this checks the transport fact,
+ * not the content-hash one.
+ */
+export function isGenuineContinuationTurn(
+  artifactRelPath: string | null | undefined,
+  apiKeyId: string | null | undefined
+): boolean {
+  if (!artifactRelPath) return false;
+  const cached = genuineContinuationCache.get(artifactRelPath);
+  if (cached !== undefined) return cached;
+
+  const { artifact, state } = readCallArtifact(artifactRelPath);
+  if (state !== "ready" || !artifact?.pipeline) {
+    return cacheGenuineContinuation(artifactRelPath, false);
+  }
+  const previousResponseId = extractPreviousResponseId(
+    artifact.pipeline as Record<string, unknown>
+  );
+  if (!previousResponseId) return cacheGenuineContinuation(artifactRelPath, false);
+
+  return cacheGenuineContinuation(
+    artifactRelPath,
+    resolveCallLogIdByResponseId(previousResponseId, apiKeyId) !== null
+  );
 }

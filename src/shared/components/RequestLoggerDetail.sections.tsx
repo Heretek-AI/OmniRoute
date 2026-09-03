@@ -259,6 +259,20 @@ export function ConversationContextSection({ log, detail }) {
               {open ? "expand_less" : "expand_more"}
             </span>
           </button>
+          {liveDetail?.parentLogId && (
+            // Full navigation, not client-side routing: the logs page only reads
+            // ?id from a fresh mount (useState(() => searchParams.get("id")) in
+            // dashboard/logs/page.tsx), so an in-page route change wouldn't load
+            // the parent entry if the user is already on this page.
+            <a
+              href={`/dashboard/logs?id=${encodeURIComponent(liveDetail.parentLogId)}`}
+              className="flex items-center gap-1 text-[11px] text-text-muted hover:text-primary transition-colors"
+              title={`Continues from ${liveDetail.parentLogId}`}
+            >
+              <span className="material-symbols-outlined text-[14px]">reply</span>
+              continues from parent
+            </a>
+          )}
         </div>
         {open && (
           <div className="flex items-center gap-1">
