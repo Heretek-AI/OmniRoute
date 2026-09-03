@@ -9,34 +9,35 @@
 import fs from "node:fs";
 import path from "node:path";
 import * as yaml from "js-yaml";
+import { isLocalOnlyDocPath, readRegexArray, readStringArray } from "./routeGuardConstants.mjs";
 
 const ROOT = process.cwd();
 const OPENAPI_PATH = path.join(ROOT, "docs", "openapi.yaml");
 const ROUTE_GUARD_PATH = path.join(ROOT, "src", "server", "authz", "routeGuard.ts");
 
-function parseStringArray(match) {
-  if (!match) return [];
-  // Strip line comments before splitting — array entries in routeGuard.ts often
-  // carry inline `// T-XX:` annotations that would otherwise pollute the parsed tokens.
-  return match[1]
-    .replace(/\/\/[^\n]*/g, "")
-    .split(",")
-    .map((s) => s.trim().replace(/^["']|["']$/g, ""))
-    .filter(Boolean);
-}
-
 const guardSrc = fs.readFileSync(ROUTE_GUARD_PATH, "utf-8");
-const LOCAL_ONLY_PREFIXES = parseStringArray(
-  guardSrc.match(/export const LOCAL_ONLY_API_PREFIXES.*?=\s*\[([^\]]+)\]/s)
-);
-const ALWAYS_PROTECTED_PATHS = parseStringArray(
-  guardSrc.match(/export const ALWAYS_PROTECTED_API_PATHS.*?=\s*\[([^\]]+)\]/s)
-);
+
+// Both halves of isLocalOnlyPath(): the flat prefixes AND the regex patterns.
+// Reading only the prefixes reported regex-gated and imported-constant routes
+// as unprotected (see routeGuardConstants.mjs).
+let LOCAL_ONLY_PREFIXES;
+let LOCAL_ONLY_PATTERNS;
+let ALWAYS_PROTECTED_PATHS;
+try {
+  LOCAL_ONLY_PREFIXES = readStringArray(guardSrc, "LOCAL_ONLY_API_PREFIXES", { root: ROOT });
+  LOCAL_ONLY_PATTERNS = readRegexArray(guardSrc, "LOCAL_ONLY_API_PATTERNS");
+  ALWAYS_PROTECTED_PATHS = readStringArray(guardSrc, "ALWAYS_PROTECTED_API_PATHS", { root: ROOT });
+} catch (err) {
+  console.error(`[openapi-security-tiers] FAIL — ${err.message}`);
+  process.exit(1);
+}
 
 if (LOCAL_ONLY_PREFIXES.length === 0 || ALWAYS_PROTECTED_PATHS.length === 0) {
   console.error("[openapi-security-tiers] FAIL — could not parse routeGuard.ts constants");
   process.exit(1);
 }
+
+const localOnlyGuards = { prefixes: LOCAL_ONLY_PREFIXES, patterns: LOCAL_ONLY_PATTERNS };
 
 const raw = yaml.load(fs.readFileSync(OPENAPI_PATH, "utf-8"));
 const paths = raw.paths || {};
@@ -49,14 +50,11 @@ for (const [pathStr, methods] of Object.entries(paths)) {
     if (!["get", "post", "put", "patch", "delete"].includes(method) || !spec) continue;
 
     if (spec["x-loopback-only"] === true) {
-      const matchesPrefix = LOCAL_ONLY_PREFIXES.some((prefix) => {
-        const norm = prefix.endsWith("/") ? prefix.slice(0, -1) : prefix;
-        return pathStr === norm || pathStr.startsWith(norm + "/");
-      });
-      if (!matchesPrefix) {
+      if (!isLocalOnlyDocPath(pathStr, localOnlyGuards)) {
         errors.push(
           `${method.toUpperCase()} ${pathStr}: has x-loopback-only but is NOT covered by ` +
-            `LOCAL_ONLY_API_PREFIXES [${LOCAL_ONLY_PREFIXES.join(", ")}]`
+            `LOCAL_ONLY_API_PREFIXES [${LOCAL_ONLY_PREFIXES.join(", ")}] ` +
+            `nor by LOCAL_ONLY_API_PATTERNS [${LOCAL_ONLY_PATTERNS.join(", ")}]`
         );
       }
     }
@@ -87,16 +85,12 @@ for (const [pathStr, methods] of Object.entries(paths)) {
 const reverseWarnings = [];
 for (const [pathStr, methods] of Object.entries(paths)) {
   if (!methods || typeof methods !== "object") continue;
-  const fallsUnderLocalOnly = LOCAL_ONLY_PREFIXES.some((prefix) => {
-    const norm = prefix.endsWith("/") ? prefix.slice(0, -1) : prefix;
-    return pathStr === norm || pathStr.startsWith(norm + "/");
-  });
-  if (!fallsUnderLocalOnly) continue;
+  if (!isLocalOnlyDocPath(pathStr, localOnlyGuards)) continue;
   for (const [method, spec] of Object.entries(methods)) {
     if (!["get", "post", "put", "patch", "delete"].includes(method) || !spec) continue;
     if (spec["x-loopback-only"] !== true) {
       reverseWarnings.push(
-        `${method.toUpperCase()} ${pathStr}: falls under LOCAL_ONLY_API_PREFIXES ` +
+        `${method.toUpperCase()} ${pathStr}: is LOCAL_ONLY per routeGuard ` +
           `but is missing x-loopback-only: true annotation`
       );
     }

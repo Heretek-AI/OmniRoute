@@ -409,7 +409,7 @@
     "open-sse/executors/antigravity.ts": 1665,
     "open-sse/executors/base.ts": 1751,
     "open-sse/executors/chatgpt-web.ts": 5056,
-    "open-sse/executors/codex.ts": 1499,
+    "open-sse/executors/codex.ts": 1503,
     "open-sse/executors/cursor.ts": 1759,
     "open-sse/executors/muse-spark-web.ts": 1405,
     "open-sse/handlers/chatCore.ts": 5976,
@@ -417,13 +417,13 @@
     "open-sse/handlers/search.ts": 1789,
     "open-sse/mcp-server/schemas/tools.ts": 1621,
     "open-sse/mcp-server/server.ts": 1572,
-    "open-sse/services/accountFallback.ts": 2422,
+    "open-sse/services/accountFallback.ts": 2429,
     "open-sse/services/adobeFireflyBrowserLogin.ts": 1401,
     "open-sse/services/combo.ts": 4023,
     "open-sse/translator/response/openai-responses.ts": 1466,
     "open-sse/utils/cursorAgentProtobuf.ts": 1547,
     "open-sse/utils/proxyFetch.ts": 1271,
-    "open-sse/utils/stream.ts": 3072,
+    "open-sse/utils/stream.ts": 3078,
     "open-sse/vendor/codex-chatgpt-web/adapters/chatgpt-web/browser-worker.ts": 4398,
     "open-sse/vendor/codex-chatgpt-web/bridge.ts": 1322,
     "src/app/(dashboard)/dashboard/HomePageClient.tsx": 1344,
@@ -451,7 +451,7 @@
     "src/shared/components/RequestLoggerV2.tsx": 1718,
     "src/shared/constants/providers/apikey/gateways.ts": 1439,
     "src/shared/services/cliRuntime.ts": 1296,
-    "src/sse/handlers/chat.ts": 2424,
+    "src/sse/handlers/chat.ts": 2434,
     "src/sse/services/auth.ts": 3427,
     "tests/unit/account-fallback-service.test.ts": 2453,
     "tests/unit/provider-validation-specialty.test.ts": 4656
@@ -629,5 +629,6 @@
   "_rebaseline_2026_06_30_v3842_release_chatgptweb_compression": "v3.8.42 cycle-close file-size reconciliation (DRIFT measured OK on each PR's base, stacked above frozen at the merge tip; fast-path PR->release/** does not run check:file-size). (1) open-sse/executors/chatgpt-web.ts 2870->3206 (+336 = #5531 portable SHA3-512 sentinel-PoW wiring with the native-vs-fallback digest path + #5536 GPT-5.5 Pro handoff branch; the pure Keccak-f[1600] fallback itself already lives in the separate leaf open-sse/utils/sha3-512.ts — the executor growth is the cohesive call-site/handoff logic, not extractable without hiding the sentinel chokepoint). (2) tests/unit/chatgpt-web.test.ts 2855->3159 (+304 = #5536 GPT-5.5 Pro handoff coverage; pair-file with its executor). (3) open-sse/services/compression/strategySelector.ts 997->1022 (+25 = #5527 T02 honest default-on pipeline inflation guard wiring at the existing finalizeStackedResult choke). All cohesive at existing chokepoints; covered by tests/unit/chatgpt-web-sha3-boringssl-5531.test.ts, chatgpt-web.test.ts (GPT-5.5 Pro), compression-pipeline-inflation-guard.test.ts.",
   "open-sse/executors/chatgpt-web.ts": "3241",
   "_rebaseline_2026_08_30_11771_vercel_gateway_passthrough": "PR #11771 adds passthroughModels: true (1 line) to the Vercel AI Gateway registry entry — no split available, single-line provider-config addition.",
-  "_relax_velocity_2026_08_30": "127 frozen line caps and cap/testCap raised by 20% (velocity phase; see quality-baseline.json _policy)."
+  "_relax_velocity_2026_08_30": "127 frozen line caps and cap/testCap raised by 20% (velocity phase; see quality-baseline.json _policy).",
+  "_rebaseline_2026_09_03_basereds_v3851_merged_growth": "Base-red drain 2026-09-03 (release/v3.8.51): four frozen files grew past their cap through already-merged PRs, all cohesive additions at the existing chokepoint with no extraction that would not hide the choke. (1) src/sse/handlers/chat.ts 2424->2434 (+10 = #12427 video-transcript log/memory redaction and its #12503 re-anchor follow-up: the redaction entry must be derived from the POST-guardrail payload at the single dispatch point, so the threading cannot move out of the handler). (2) open-sse/utils/stream.ts 3072->3078, (3) open-sse/services/accountFallback.ts 2422->2429 and (4) open-sse/executors/codex.ts 1499->1503 (+17 total = #12179 perf: hot-path regexes hoisted to module scope, bounded token caches and the quadratic-buffering fix — module-level constants and guard clauses inside the existing hot loops). Covered by the suites those PRs shipped; measured with npm run check:file-size on the pure tip."
 }
