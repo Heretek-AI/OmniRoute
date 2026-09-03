@@ -302,6 +302,15 @@ function parseDomainFilter(domainFilter?: string[]): {
   return { includes, excludes };
 }
 
+/** Read one string setting from a SINGLE source, so callers can distinguish trust. */
+function readProviderSettingString(
+  source: Record<string, unknown> | undefined,
+  key: string
+): string | undefined {
+  const value = source?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
 function getProviderSettingString(
   params: Pick<SearchRequestParams, "providerOptions" | "providerSpecificData">,
   key: string
@@ -323,19 +332,54 @@ export function resolveSearchBaseUrl(
   config: SearchProviderConfig,
   params: SearchRequestParams
 ): string {
-  const override = getProviderSettingString(params, "baseUrl");
-  if (override) {
-    // GHSA-j7j4-g9qc-q69c: the override is client-controlled (provider_options /
-    // providerSpecificData) and flows into a plain fetch() sink — validate it
-    // before any builder uses it as the server-side fetch target. Mode is
-    // block-metadata (NOT public-only): the primary searxng use case is a
-    // self-hosted instance on loopback/LAN, so private hosts keep working,
-    // while cloud-metadata endpoints (IMDS credential theft) are rejected.
-    // The catalog's own config.baseUrl is operator config and stays untouched.
-    parseAndValidateNonMetadataUrl(override);
-    return override.replace(/\/+$/, "");
+  // The two override sources are NOT equally trusted, and treating them as one
+  // was GHSA-3f8g-pfh9-j687.
+  //
+  // `providerSpecificData` is the stored provider connection (see the
+  // `credentials?.providerSpecificData` wiring below) — operator config. It is
+  // how an operator points at a self-hosted searxng, so loopback/LAN keeps
+  // working under the block-metadata policy: cloud-metadata endpoints (IMDS
+  // credential theft) stay rejected (GHSA-j7j4-g9qc-q69c).
+  const operatorOverride = readProviderSettingString(params.providerSpecificData, "baseUrl");
+  if (operatorOverride) {
+    parseAndValidateNonMetadataUrl(operatorOverride);
+    return operatorOverride.replace(/\/+$/, "");
   }
+
+  // `providerOptions` is `body.provider_options` — straight off the request, so
+  // tenant input. It is refused outright rather than validated:
+  //
+  //   - For a keyed provider the builder attaches the OPERATOR's API key to
+  //     whatever host this resolves to (`key=`/`api_key=` in the query for
+  //     google-pse/searchapi, `X-API-Key`/`Authorization` for you.com/linkup/
+  //     nimble/ollama), so honoring a caller-chosen host hands the operator's
+  //     third-party key to that host. A block-metadata check does nothing about
+  //     it — the attacker just uses their own public host.
+  //   - For any provider the response body is parsed and returned to the caller,
+  //     so a caller-chosen target is SSRF with readback.
+  //
+  // No provider has a legitimate need for a per-request caller-chosen fetch
+  // target; the self-hosted story is served by the operator field above. If one
+  // ever does, it needs an explicit per-provider opt-in plus a host allow-list,
+  // not a validated free-form URL.
+  const tenantOverride = readProviderSettingString(params.providerOptions, "baseUrl");
+  if (tenantOverride) {
+    throw new SearchBaseUrlOverrideError(config.id);
+  }
+
   return config.baseUrl.replace(/\/+$/, "");
+}
+
+/** Refusal for a caller-supplied `provider_options.baseUrl` (GHSA-3f8g-pfh9-j687). */
+export class SearchBaseUrlOverrideError extends Error {
+  readonly code = "SEARCH_BASE_URL_OVERRIDE_REFUSED";
+  constructor(providerId: string) {
+    super(
+      `provider_options.baseUrl is not accepted for search provider "${providerId}". ` +
+        `The base URL is operator configuration; set it on the provider connection instead.`
+    );
+    this.name = "SearchBaseUrlOverrideError";
+  }
 }
 
 function toSearchPageNumber(offset: number | undefined, maxResults: number): number | undefined {
