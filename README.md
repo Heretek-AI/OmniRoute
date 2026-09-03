@@ -724,6 +724,7 @@ of your shell history. → [CLI Integrations](docs/guides/CLI-INTEGRATIONS.md)
   <tr><td align="left" nowrap>📦 <b>npm (global)</b></td><td align="left" nowrap><code>npm install -g omniroute</code></td><td align="left">One command, any OS</td></tr>
   <tr><td align="left" nowrap>🐳 <b>Docker</b></td><td align="left" nowrap><code>docker run … diegosouzapw/omniroute</code></td><td align="left">Multi-arch <b>AMD64 + ARM64</b></td></tr>
   <tr><td align="left" nowrap>🖥️ <b>Desktop (Electron)</b></td><td align="left" nowrap><code>npm run electron:build</code></td><td align="left">Native window + system tray — <b>Windows / macOS / Linux</b></td></tr>
+  <tr><td align="left" nowrap>🎩 <b>Menu-bar (OmniRouteTray)</b></td><td align="left" nowrap><code>brew install --cask zoispag/tap/omniroute-tray</code></td><td align="left">Supervises &amp; auto-updates the server — <b>macOS</b></td></tr>
   <tr><td align="left" nowrap>💪 <b>ARM</b></td><td align="left" nowrap>native <code>arm64</code></td><td align="left">Raspberry Pi, ARM servers, Apple Silicon</td></tr>
   <tr><td align="left" nowrap>📱 <b>Android (Termux)</b></td><td align="left" nowrap><code>pkg install nodejs && npx -y omniroute</code></td><td align="left">Runs <b>on your phone</b>, 24/7, no root</td></tr>
   <tr><td align="left" nowrap>📲 <b>PWA</b></td><td align="left" nowrap>"Add to Home Screen"</td><td align="left">Fullscreen, offline, installable from browser</td></tr>
@@ -732,7 +733,7 @@ of your shell history. → [CLI Integrations](docs/guides/CLI-INTEGRATIONS.md)
   <tr><td align="left" nowrap>🛠️ <b>From source</b></td><td align="left" nowrap><code>npm install && npm run dev</code></td><td align="left">Hack on it, contribute</td></tr>
 </table>
 
-<sub>📖 [Docker Guide](docs/guides/DOCKER_GUIDE.md) · [Desktop](electron/README.md) · [Termux](docs/guides/TERMUX_GUIDE.md) · [PWA](docs/guides/PWA_GUIDE.md) · [OpenCode](docs/frameworks/OPENCODE.md)</sub>
+<sub>📖 [Docker Guide](docs/guides/DOCKER_GUIDE.md) · [Desktop](electron/README.md) · [Menu-bar tray](https://github.com/zoispag/omniroute-tray) · [Termux](docs/guides/TERMUX_GUIDE.md) · [PWA](docs/guides/PWA_GUIDE.md) · [OpenCode](docs/frameworks/OPENCODE.md)</sub>
 
 <br/>
 
@@ -762,6 +763,42 @@ From inside the editor: open the **Extensions** view, search **"OmniRoute"**, cl
 [diegosouzapw/OmniCopilot](https://github.com/diegosouzapw/OmniCopilot).
 
 <sub>📖 [VS Code Copilot Chat guide](docs/guides/VSCODE-COPILOT.md) — setup, what the picker shows, dashboard-in-a-tab, troubleshooting</sub>
+
+<br/>
+
+<div align="center">
+
+### 🎩 New: OmniRouteTray — your gateway, living in the menu bar
+
+</div>
+
+> `omniroute serve` is happiest when it's always on. **[OmniRouteTray](https://github.com/zoispag/omniroute-tray)**
+> turns that into a set-and-forget menu-bar app for macOS: it starts the server, keeps it alive
+> across reboots, updates it in place, and puts your live token budget one click away — **no
+> terminal window left open, no `npm install -g omniroute` to babysit.**
+
+Built with [Tauri v2](https://v2.tauri.app/) (a Rust core the size of a rounding error), it ships
+its own signed Node 24 runtime and manages an app-owned OmniRoute install, so it never fights your
+global `node`/`bun`. It **shares your existing `~/.omniroute/` config and database** — so it's the
+same OmniRoute you already run, just with a hat on. 🎩
+
+<table>
+  <tr><th align="left">What it does</th><th align="left">How</th></tr>
+  <tr><td align="left" nowrap>🟢 <b>Supervises the server</b></td><td align="left">Spawns <code>omniroute serve</code>, adopts an already-running instance instead of duplicating it</td></tr>
+  <tr><td align="left" nowrap>📊 <b>Live usage at a glance</b></td><td align="left">Provider quota bars, Claude session/weekly limits with reset countdowns, 30-day cost breakdown</td></tr>
+  <tr><td align="left" nowrap>🔄 <b>Auto-updates in place</b></td><td align="left">Staged install, atomic swap, rollback on failure — always on the newest release</td></tr>
+  <tr><td align="left" nowrap>🚀 <b>Start on login</b></td><td align="left">Optional launch at login; tray-only, no dock icon</td></tr>
+  <tr><td align="left" nowrap>🩺 <b>Doctor &amp; logs</b></td><td align="left">One-click diagnostics and server log access</td></tr>
+</table>
+
+```sh
+brew install --cask zoispag/tap/omniroute-tray
+```
+
+<sub>Prefer a download? Grab the latest <code>.dmg</code> from
+<a href="https://github.com/zoispag/omniroute-tray/releases">Releases</a>. Source, issues and build
+docs live at <a href="https://github.com/zoispag/omniroute-tray">zoispag/omniroute-tray</a>.
+<br/>💛 A community project by <a href="https://github.com/zoispag">@zoispag</a> — not an official OmniRoute release.</sub>
 
 <br/>
 
