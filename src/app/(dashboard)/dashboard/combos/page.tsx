@@ -771,7 +771,8 @@ function CombosPageContent() {
   const [showUsageGuide, setShowUsageGuide] = useState(true);
   useEffect(() => {
     try {
-      setShowUsageGuide(globalThis.localStorage?.getItem(COMBO_USAGE_GUIDE_STORAGE_KEY) !== "1");
+      const isVisible = globalThis.localStorage?.getItem(COMBO_USAGE_GUIDE_STORAGE_KEY) !== "1";
+      queueMicrotask(() => setShowUsageGuide(isVisible));
     } catch {
       // Ignore storage access errors (privacy mode / restricted environments)
     }

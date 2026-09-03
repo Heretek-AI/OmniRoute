@@ -160,6 +160,16 @@ export function createDefaultEmbeddingGenerator(config: {
     const provider = options?.provider || config.embeddingProvider || "openai";
 
     let targetUrl = config.embeddingBaseUrl;
+    if (targetUrl) {
+      targetUrl = targetUrl.trim();
+      if (!targetUrl.endsWith("/embeddings")) {
+        if (!targetUrl.endsWith("/v1")) {
+          targetUrl = `${targetUrl.replace(/\/+$/, "")}/v1/embeddings`;
+        } else {
+          targetUrl = `${targetUrl.replace(/\/+$/, "")}/embeddings`;
+        }
+      }
+    }
     const apiKey = config.embeddingApiKey;
 
     if (!targetUrl) {

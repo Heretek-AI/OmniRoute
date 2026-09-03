@@ -85,82 +85,114 @@ function parseNumber(val: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+type DynamicConfigResolver = () => Partial<SemanticCacheConfig> | null | undefined;
+let dynamicResolver: DynamicConfigResolver | null = null;
+
+export function registerSemanticCacheConfigResolver(resolver: DynamicConfigResolver): void {
+  dynamicResolver = resolver;
+}
+
 /**
  * Resolves semantic cache configuration from environment variables, merged
- * with optional explicit overrides.
+ * with optional dynamic database settings and explicit overrides.
  */
 export function resolveSemanticCacheConfig(
   overrides?: Partial<SemanticCacheConfig>
 ): SemanticCacheConfig {
+  const dynamic = dynamicResolver ? dynamicResolver() : null;
   const env = process.env;
 
   const backendEnv = (env.OMNIROUTE_SEMANTIC_CACHE_BACKEND || "").toLowerCase().trim();
-  const backend: SemanticCacheBackend = backendEnv === "redis" ? "redis" : "memory";
+  const backend: SemanticCacheBackend =
+    backendEnv === "redis"
+      ? "redis"
+      : backendEnv === "memory"
+        ? "memory"
+        : (dynamic?.backend ?? DEFAULT_SEMANTIC_CACHE_CONFIG.backend);
 
   const resolved: SemanticCacheConfig = {
-    enabled: parseBoolean(
-      env.OMNIROUTE_SEMANTIC_CACHE_ENABLED,
-      DEFAULT_SEMANTIC_CACHE_CONFIG.enabled
-    ),
+    enabled:
+      env.OMNIROUTE_SEMANTIC_CACHE_ENABLED !== undefined
+        ? parseBoolean(env.OMNIROUTE_SEMANTIC_CACHE_ENABLED, DEFAULT_SEMANTIC_CACHE_CONFIG.enabled)
+        : (dynamic?.enabled ?? DEFAULT_SEMANTIC_CACHE_CONFIG.enabled),
     backend,
-    similarityThreshold: parseNumber(
-      env.OMNIROUTE_SEMANTIC_CACHE_THRESHOLD,
-      DEFAULT_SEMANTIC_CACHE_CONFIG.similarityThreshold
-    ),
-    ttlMs: parseNumber(env.OMNIROUTE_SEMANTIC_CACHE_TTL_MS, DEFAULT_SEMANTIC_CACHE_CONFIG.ttlMs),
-    maxEntries: parseNumber(
-      env.OMNIROUTE_SEMANTIC_CACHE_MAX_ENTRIES,
-      DEFAULT_SEMANTIC_CACHE_CONFIG.maxEntries
-    ),
+    similarityThreshold:
+      env.OMNIROUTE_SEMANTIC_CACHE_THRESHOLD !== undefined
+        ? parseNumber(
+            env.OMNIROUTE_SEMANTIC_CACHE_THRESHOLD,
+            DEFAULT_SEMANTIC_CACHE_CONFIG.similarityThreshold
+          )
+        : (dynamic?.similarityThreshold ?? DEFAULT_SEMANTIC_CACHE_CONFIG.similarityThreshold),
+    ttlMs:
+      env.OMNIROUTE_SEMANTIC_CACHE_TTL_MS !== undefined
+        ? parseNumber(env.OMNIROUTE_SEMANTIC_CACHE_TTL_MS, DEFAULT_SEMANTIC_CACHE_CONFIG.ttlMs)
+        : (dynamic?.ttlMs ?? DEFAULT_SEMANTIC_CACHE_CONFIG.ttlMs),
+    maxEntries:
+      env.OMNIROUTE_SEMANTIC_CACHE_MAX_ENTRIES !== undefined
+        ? parseNumber(
+            env.OMNIROUTE_SEMANTIC_CACHE_MAX_ENTRIES,
+            DEFAULT_SEMANTIC_CACHE_CONFIG.maxEntries
+          )
+        : (dynamic?.maxEntries ?? DEFAULT_SEMANTIC_CACHE_CONFIG.maxEntries),
     embeddingProvider:
       env.OMNIROUTE_SEMANTIC_CACHE_EMBEDDING_PROVIDER?.trim() ||
+      dynamic?.embeddingProvider ||
       DEFAULT_SEMANTIC_CACHE_CONFIG.embeddingProvider,
     embeddingModel:
       env.OMNIROUTE_SEMANTIC_CACHE_EMBEDDING_MODEL?.trim() ||
+      dynamic?.embeddingModel ||
       DEFAULT_SEMANTIC_CACHE_CONFIG.embeddingModel,
     embeddingDimension: env.OMNIROUTE_SEMANTIC_CACHE_EMBEDDING_DIMENSION
       ? parseNumber(env.OMNIROUTE_SEMANTIC_CACHE_EMBEDDING_DIMENSION, 1536)
-      : DEFAULT_SEMANTIC_CACHE_CONFIG.embeddingDimension,
+      : (dynamic?.embeddingDimension ?? DEFAULT_SEMANTIC_CACHE_CONFIG.embeddingDimension),
     embeddingTimeoutMs: parseNumber(
       env.OMNIROUTE_SEMANTIC_CACHE_EMBEDDING_TIMEOUT_MS,
-      DEFAULT_SEMANTIC_CACHE_CONFIG.embeddingTimeoutMs
+      dynamic?.embeddingTimeoutMs ?? DEFAULT_SEMANTIC_CACHE_CONFIG.embeddingTimeoutMs
     ),
     cacheByModel: parseBoolean(
       env.OMNIROUTE_SEMANTIC_CACHE_BY_MODEL,
-      DEFAULT_SEMANTIC_CACHE_CONFIG.cacheByModel
+      dynamic?.cacheByModel ?? DEFAULT_SEMANTIC_CACHE_CONFIG.cacheByModel
     ),
     cacheByProvider: parseBoolean(
       env.OMNIROUTE_SEMANTIC_CACHE_BY_PROVIDER,
-      DEFAULT_SEMANTIC_CACHE_CONFIG.cacheByProvider
+      dynamic?.cacheByProvider ?? DEFAULT_SEMANTIC_CACHE_CONFIG.cacheByProvider
     ),
     conversationHistoryDepth: parseNumber(
       env.OMNIROUTE_SEMANTIC_CACHE_HISTORY_DEPTH,
-      DEFAULT_SEMANTIC_CACHE_CONFIG.conversationHistoryDepth
+      dynamic?.conversationHistoryDepth ?? DEFAULT_SEMANTIC_CACHE_CONFIG.conversationHistoryDepth
     ),
     conversationHistoryThreshold: parseNumber(
       env.OMNIROUTE_SEMANTIC_CACHE_HISTORY_THRESHOLD,
-      DEFAULT_SEMANTIC_CACHE_CONFIG.conversationHistoryThreshold
+      dynamic?.conversationHistoryThreshold ??
+        DEFAULT_SEMANTIC_CACHE_CONFIG.conversationHistoryThreshold
     ),
     excludeSystemPrompt: parseBoolean(
       env.OMNIROUTE_SEMANTIC_CACHE_EXCLUDE_SYSTEM,
-      DEFAULT_SEMANTIC_CACHE_CONFIG.excludeSystemPrompt
+      dynamic?.excludeSystemPrompt ?? DEFAULT_SEMANTIC_CACHE_CONFIG.excludeSystemPrompt
     ),
     embeddingBaseUrl:
       env.OMNIROUTE_SEMANTIC_CACHE_EMBEDDING_BASE_URL?.trim() ||
+      dynamic?.embeddingBaseUrl ||
       overrides?.embeddingBaseUrl ||
       undefined,
     embeddingApiKey:
       env.OMNIROUTE_SEMANTIC_CACHE_EMBEDDING_API_KEY?.trim() ||
+      dynamic?.embeddingApiKey ||
       overrides?.embeddingApiKey ||
       undefined,
-    redisUrl: env.OMNIROUTE_SEMANTIC_CACHE_REDIS_URL || env.REDIS_URL || undefined,
+    redisUrl:
+      env.OMNIROUTE_SEMANTIC_CACHE_REDIS_URL || env.REDIS_URL || dynamic?.redisUrl || undefined,
     redisPrefix:
       env.OMNIROUTE_SEMANTIC_CACHE_REDIS_PREFIX?.trim() ||
+      dynamic?.redisPrefix ||
       DEFAULT_SEMANTIC_CACHE_CONFIG.redisPrefix,
-    requireZeroTemperature: parseBoolean(
-      env.OMNIROUTE_SEMANTIC_CACHE_REQUIRE_ZERO_TEMP,
-      DEFAULT_SEMANTIC_CACHE_CONFIG.requireZeroTemperature
-    ),
+    requireZeroTemperature:
+      env.OMNIROUTE_SEMANTIC_CACHE_REQUIRE_ZERO_TEMP !== undefined
+        ? parseBoolean(
+            env.OMNIROUTE_SEMANTIC_CACHE_REQUIRE_ZERO_TEMP,
+            DEFAULT_SEMANTIC_CACHE_CONFIG.requireZeroTemperature
+          )
+        : (dynamic?.requireZeroTemperature ?? DEFAULT_SEMANTIC_CACHE_CONFIG.requireZeroTemperature),
     ...overrides,
   };
 

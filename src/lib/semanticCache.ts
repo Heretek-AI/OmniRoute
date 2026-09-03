@@ -245,6 +245,27 @@ export function getCachedResponse(signature) {
 }
 
 /**
+ * Record a semantic cache hit: increments hit count for the entry in SQLite
+ * and increments global hit metrics (hits and tokens_saved).
+ */
+export function recordSemanticCacheHit(signature: string, tokensSaved = 0): void {
+  try {
+    const db = getDbInstance();
+    if (signature) {
+      db.prepare(
+        "UPDATE semantic_cache SET hit_count = hit_count + 1 WHERE signature = ? OR prompt_hash = ?"
+      ).run(signature, signature.slice(0, 16));
+    }
+    incrementMetric("hits");
+    if (tokensSaved > 0) {
+      incrementMetric("tokens_saved", tokensSaved);
+    }
+  } catch {
+    // DB not available — fail open
+  }
+}
+
+/**
  * Store a response in cache.
  * @param {string} signature
  * @param {string} model

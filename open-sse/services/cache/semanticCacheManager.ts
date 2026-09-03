@@ -65,6 +65,7 @@ export interface CacheStoreParams {
   model: string;
   provider: string;
   apiKeyId?: string | null;
+  signature?: string;
   tokensSaved?: number;
   ttlMs?: number;
 }
@@ -386,6 +387,7 @@ export class SemanticCacheManager {
     const entry: CacheEntry = {
       id: crypto.randomUUID(),
       hash: directHash,
+      signature: params.signature || undefined,
       embedding,
       promptText,
       model: params.model,

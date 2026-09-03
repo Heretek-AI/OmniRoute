@@ -9,6 +9,7 @@
 export interface CacheEntry {
   id: string;
   hash: string;
+  signature?: string;
   embedding?: number[];
   promptText: string;
   model: string;

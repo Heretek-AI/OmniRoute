@@ -88,6 +88,7 @@ function writeStreamingCacheEntry(
         model: args.model,
         provider: args.provider || (cleanBody.provider as string) || "",
         apiKeyId: args.apiKeyId,
+        signature: sig,
         tokensSaved,
       })
       .catch(() => {});

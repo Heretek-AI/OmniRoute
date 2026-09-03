@@ -1,4 +1,9 @@
-import { generateSignature, getCachedResponse, isCacheableForRead } from "@/lib/semanticCache";
+import {
+  generateSignature,
+  getCachedResponse,
+  isCacheableForRead,
+  recordSemanticCacheHit,
+} from "@/lib/semanticCache";
 import { calculateCost } from "@/lib/usage/costCalculator";
 import { trackPendingRequest } from "@/lib/usageDb";
 import { synthesizeOpenAiSseFromJson } from "../../utils/jsonToSse.ts";
@@ -111,6 +116,22 @@ export async function checkSemanticCache({
         : cachedUsage
           ? (Number(cachedUsage.prompt_tokens) || 0) + (Number(cachedUsage.completion_tokens) || 0)
           : 0;
+
+      const requestSignature = generateSignature(
+        model,
+        body.messages ?? body.input,
+        body.temperature,
+        body.top_p,
+        apiKeyId ?? undefined
+      );
+
+      const targetSignature =
+        managerResult.entry?.signature ||
+        (hitType === "exact" ? requestSignature : managerResult.entry?.hash);
+
+      if (targetSignature) {
+        recordSemanticCacheHit(targetSignature, tokensSaved);
+      }
 
       const headers: Record<string, string> = {
         "Content-Type": cachedSse ? "text/event-stream" : "application/json",

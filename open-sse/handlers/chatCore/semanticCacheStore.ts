@@ -85,6 +85,7 @@ export function storeSemanticCacheResponse(
           ((args.translatedResponse as Record<string, unknown>).provider as string) ||
           "",
         apiKeyId: args.apiKeyId,
+        signature,
         tokensSaved,
       })
       .catch(() => {});

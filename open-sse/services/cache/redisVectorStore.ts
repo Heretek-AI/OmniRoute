@@ -117,12 +117,18 @@ export class RedisVectorStore implements IVectorStore {
     }
   }
 
-  public async set(entry: CacheEntry, ttlMs: number): Promise<void> {
+  public async set(entry: CacheEntry, ttlMs?: number): Promise<void> {
     try {
       const client = await this.getClient();
       if (!client) return;
 
-      const ttlSeconds = Math.max(1, Math.ceil(ttlMs / 1000));
+      const effectiveTtlMs =
+        typeof ttlMs === "number" && Number.isFinite(ttlMs) && ttlMs > 0
+          ? ttlMs
+          : entry.expiresAt > 0
+            ? Math.max(1000, entry.expiresAt - Date.now())
+            : 1800000;
+      const ttlSeconds = Math.max(1, Math.ceil(effectiveTtlMs / 1000));
       const serialized = JSON.stringify(entry);
 
       // Store entry and exact hash mapping with TTL
