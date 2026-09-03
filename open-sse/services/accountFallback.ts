@@ -49,7 +49,8 @@ import {
 } from "../../src/shared/constants/providers";
 import { resolveUseUpstream429BreakerHints } from "../../src/shared/utils/providerHints";
 import { getCodexModelScope } from "../config/codexQuotaScopes.ts";
-import { getQuotaScopedModelForProvider } from "./antigravityQuotaFamily.ts";
+import { getQuotaScopedModelForProvider, isAntigravityQuotaProvider } from "./antigravityQuotaFamily.ts";
+import { persistAntigravityFamilyCooldownIfQuota } from "./antigravityFamilyCooldown.ts";
 import {
   classifyGeminiQuotaMetricFromText,
   isRpdExhausted,
@@ -63,6 +64,8 @@ import {
   parseDelayString,
   MAX_SHORT_RETRY_HINT_MS,
 } from "./retryAfterJson.ts";
+import { isMoonshotAccountBalanceExhausted } from "./usage/moonshotOpenPlatform.ts";
+import { isTpdRateLimit, resolveTpdCooldownMs } from "./dailyQuotaReset.ts";
 
 // Pre-compiled regex constants for hot-path retry parsing (avoid per-call compilation)
 const RETRY_AFTER_RE = /retry\s+after\s+(\d+)\s*s/i;
@@ -650,6 +653,9 @@ export async function recordCoreOwnedAntigravityQuotaState({
       exactCooldownIsUpstreamReset: retryHintBypassesMaxCooldownMs(fallback.retryHintSource),
     }
   );
+  if (lockout.cooldownMs > 0 && isProviderExhaustedReason(fallback)) {
+    persistAntigravityFamilyCooldownIfQuota({ provider, connectionId, model, cooldownMs: lockout.cooldownMs, reason: "quota_exhausted" });
+  }
   return { cooldownMs: lockout.cooldownMs, failureCount: lockout.failureCount };
 }
 
@@ -1601,7 +1607,8 @@ export function isDailyQuotaExhausted(errorText: string): boolean {
   return (
     lower.includes("today's quota") ||
     lower.includes("daily quota") ||
-    lower.includes("try again tomorrow")
+    lower.includes("try again tomorrow") ||
+    lower.includes("tpd rate limit")
   );
 }
 
@@ -1647,7 +1654,12 @@ export function checkFallbackError(
   headers: Headers | Record<string, string> | null = null,
   profileOverride: ProviderProfile | null = null,
   structuredError?: { code?: string | null; type?: string | null } | null,
-  rotation?: { account?: unknown } | null
+  rotation?: { account?: unknown } | null,
+  dailyReset?: {
+    timezone?: unknown;
+    hour?: unknown;
+    nowMs?: number;
+  } | null,
 ): {
   shouldFallback: boolean;
   cooldownMs: number;
@@ -1930,8 +1942,13 @@ export function checkFallbackError(
       }
     }
 
-    // T10 (sub2api #1169) + #8247: credits/quota exhausted; *-compatible-* nicknames stay model-scoped.
-    if (shouldUseQuotaSignal && isCreditsExhausted(errorStr) && !isCompatibleProvider(provider)) {
+    // T10 (sub2api #1169) + #8247: credits/quota exhausted; *-compatible-* nicknames stay model-scoped
+    // unless the body is an account-level Open Platform empty wallet.
+    if (
+      shouldUseQuotaSignal &&
+      isCreditsExhausted(errorStr) &&
+      (!isCompatibleProvider(provider) || isMoonshotAccountBalanceExhausted(errorStr))
+    ) {
       return {
         shouldFallback: true,
         cooldownMs: COOLDOWN_MS.paymentRequired ?? 3600 * 1000, // 1h cooldown
@@ -1940,17 +1957,43 @@ export function checkFallbackError(
       };
     }
 
-    // Daily quota exhausted — lock model until tomorrow
+    // Daily quota exhausted. TPD uses the node clock / header; other daily
+    // quota text still uses getMsUntilTomorrow. TPD without either is not a
+    // host-midnight lock — fall through to short 429.
     if (shouldUseQuotaSignal && isDailyQuotaExhausted(errorStr)) {
-      const msUntilTomorrow = getMsUntilTomorrow();
-      // Cap at 24 hours to handle timezone edge cases
-      const cooldownMs = Math.min(msUntilTomorrow, 24 * 60 * 60 * 1000);
-      return {
-        shouldFallback: true,
-        cooldownMs,
-        reason: RateLimitReason.QUOTA_EXHAUSTED,
-        dailyQuotaExhausted: true,
-      };
+      if (isTpdRateLimit(errorStr)) {
+        const headerResetAtMs = parseResetFromHeaders(headers);
+        const tpdMs = resolveTpdCooldownMs(errorStr, {
+          timezone: dailyReset?.timezone,
+          hour: dailyReset?.hour,
+          nowMs: dailyReset?.nowMs,
+          headerResetAtMs,
+        });
+        if (tpdMs == null) {
+          // no clock, no header — short 429, do not guess midnight
+          console.warn(
+            "[accountFallback] TPD 429 without node daily-reset clock or Reset header; using short cooldown",
+            { provider },
+          );
+        } else {
+          return {
+            shouldFallback: true,
+            cooldownMs: tpdMs,
+            reason: RateLimitReason.QUOTA_EXHAUSTED,
+            dailyQuotaExhausted: true,
+          };
+        }
+      } else {
+        const msUntilTomorrow = getMsUntilTomorrow();
+        // Cap at 24 hours to handle timezone edge cases
+        const cooldownMs = Math.min(msUntilTomorrow, 24 * 60 * 60 * 1000);
+        return {
+          shouldFallback: true,
+          cooldownMs,
+          reason: RateLimitReason.QUOTA_EXHAUSTED,
+          dailyQuotaExhausted: true,
+        };
+      }
     }
 
     // Issue #2321 (5h subscription quota) + Issue #3709 (ollama-cloud weekly
@@ -2389,12 +2432,7 @@ export function applyErrorState<T extends AccountState | null | undefined>(
   // (`markConnectionQuotaExhausted`) so a DB failure can never crash the
   // chat path. See issue #1 (per-account 429 cascade not persisting).
   const connId = (account as AccountState | null | undefined)?.id;
-  if (
-    typeof connId === "string" &&
-    connId.length > 0 &&
-    effectiveCooldownMs > 0 &&
-    nextState.rateLimitedUntil
-  ) {
+  if (typeof connId === "string" && connId.length > 0 && effectiveCooldownMs > 0 && nextState.rateLimitedUntil && !isAntigravityQuotaProvider(prov)) {
     try {
       const untilMs = cooldownUntilMs(nextState.rateLimitedUntil);
       if (Number.isFinite(untilMs) && untilMs > Date.now()) {
