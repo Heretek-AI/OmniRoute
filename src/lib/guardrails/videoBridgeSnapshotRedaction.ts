@@ -100,3 +100,36 @@ export function redactVideoTranscriptFieldsForLog(body: unknown): unknown {
   }
   return cloned;
 }
+
+interface ClientRawRequestLike {
+  endpoint: unknown;
+  body: unknown;
+  headers?: unknown;
+}
+
+interface RequestLoggerLike {
+  logClientRawRequest: (endpoint: unknown, body: unknown, headers?: unknown) => void;
+}
+
+/**
+ * Call-site wrapper for `reqLogger.logClientRawRequest` (chatCore.ts's "0. Log client raw
+ * request" step): keeps the null-check and the observed/redacted guard out of chatCore.ts,
+ * which is a size-frozen file (`config/quality/file-size-baseline.json`) — this owns the
+ * redaction, so it owns the one guarded call site that applies it. Behavior is identical to
+ * the inline block it replaces: a non-observed request logs `clientRawRequest.body` by the
+ * exact same reference (no clone); an observed one logs the redacted clone.
+ */
+export function logClientRawRequestRedacted(
+  reqLogger: RequestLoggerLike,
+  clientRawRequest: ClientRawRequestLike | null | undefined,
+  videoBridgeObserved: boolean
+): void {
+  if (!clientRawRequest) return;
+  reqLogger.logClientRawRequest(
+    clientRawRequest.endpoint,
+    videoBridgeObserved
+      ? redactVideoTranscriptFieldsForLog(clientRawRequest.body)
+      : clientRawRequest.body,
+    clientRawRequest.headers
+  );
+}

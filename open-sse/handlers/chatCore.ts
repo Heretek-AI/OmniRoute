@@ -360,7 +360,7 @@ import { deleteSessionAccountAffinity } from "@/lib/db/sessionAccountAffinity";
 import { getCacheControlSettings } from "@/lib/cacheControlSettings";
 import { guardrailRegistry } from "@/lib/guardrails";
 import type { VideoBridgeLogRedactionEntry } from "@/lib/guardrails/videoBridge";
-import { redactVideoTranscriptFieldsForLog } from "@/lib/guardrails/videoBridgeSnapshotRedaction";
+import { logClientRawRequestRedacted } from "@/lib/guardrails/videoBridgeSnapshotRedaction";
 import {
   shouldPreserveCacheControl,
   resolveConnectionCacheOverride,
@@ -1212,22 +1212,9 @@ export async function handleChatCore({
   });
   const pendingScope = { id: pendingRequestId, model, provider, connectionId: pendingConnId };
   const providerRequestCapture = createPreparedRequestLogger(reqLogger, pendingScope);
-  // 0. Log client raw request (before format conversion)
-  if (clientRawRequest) {
-    reqLogger.logClientRawRequest(
-      clientRawRequest.endpoint,
-      // #12150 P2 surface 1 (the dominant transcript-retention leak): this snapshot is
-      // captured BEFORE the guardrail chain runs, so it still carries the client's raw
-      // video transcript cue text untouched by the video-bridge guardrail's own
-      // description redaction. Redact it in this LOGGED copy only when the guardrail
-      // observed a video part on this request — clientRawRequest.body itself is never
-      // mutated and keeps flowing to every other consumer unchanged.
-      videoBridgeObserved
-        ? redactVideoTranscriptFieldsForLog(clientRawRequest.body)
-        : clientRawRequest.body,
-      clientRawRequest.headers
-    );
-  }
+  // 0. Log client raw request (before format conversion) — redacts video transcript
+  // cues in the logged copy only; see videoBridgeSnapshotRedaction.ts.
+  logClientRawRequestRedacted(reqLogger, clientRawRequest, videoBridgeObserved);
   const reasoningRouteDecision =
     body && typeof body === "object"
       ? (body as Record<string, unknown>)._omnirouteReasoningRouteTrace
