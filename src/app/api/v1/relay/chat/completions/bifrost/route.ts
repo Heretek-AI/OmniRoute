@@ -30,11 +30,13 @@
 
 import { CORS_HEADERS, handleCorsOptions } from "@/shared/utils/cors";
 import { stripSensitiveResponseHeaders } from "@omniroute/open-sse/utils/upstreamResponseHeaders";
-import { buildErrorBody, sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
-import { parseUpstreamError } from "@omniroute/open-sse/handlers/usageExtractor";
 import { createInjectionGuard } from "@/middleware/promptInjectionGuard";
 import { getRelayTokenByHash, checkRateLimit, recordRelayUsage } from "@/lib/db/relayProxies";
-import { buildErrorBody } from "@omniroute/open-sse/utils/error";
+import {
+  buildErrorBody,
+  parseUpstreamError,
+  sanitizeErrorMessage,
+} from "@omniroute/open-sse/utils/error";
 import { getProviderPluginManifestHeader } from "@omniroute/open-sse/config/providerPluginManifestUrl.ts";
 import { z } from "zod";
 import {
