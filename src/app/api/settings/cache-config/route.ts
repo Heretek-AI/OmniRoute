@@ -12,6 +12,13 @@ import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 
 const cacheConfigUpdateSchema = z.object({
   semanticCacheEnabled: z.boolean().optional(),
+  semanticCacheBackend: z.enum(["memory", "redis"]).optional(),
+  semanticCacheThreshold: z.number().min(0).max(1).optional(),
+  semanticCacheEmbeddingProvider: z.string().min(1).optional(),
+  semanticCacheEmbeddingModel: z.string().min(1).optional(),
+  semanticCacheEmbeddingDimension: z.number().int().positive().optional(),
+  semanticCacheRedisUrl: z.string().min(1).optional(),
+  semanticCacheRequireZeroTemp: z.boolean().optional(),
   semanticCacheMaxSize: z.number().positive().optional(),
   semanticCacheTTL: z.number().positive().optional(),
   promptCacheEnabled: z.boolean().optional(),
@@ -23,6 +30,13 @@ const cacheConfigUpdateSchema = z.object({
 
 const CACHE_CONFIG_KEYS = [
   "semanticCacheEnabled",
+  "semanticCacheBackend",
+  "semanticCacheThreshold",
+  "semanticCacheEmbeddingProvider",
+  "semanticCacheEmbeddingModel",
+  "semanticCacheEmbeddingDimension",
+  "semanticCacheRedisUrl",
+  "semanticCacheRequireZeroTemp",
   "semanticCacheMaxSize",
   "semanticCacheTTL",
   "promptCacheEnabled",
@@ -98,6 +112,27 @@ export async function PUT(request: NextRequest) {
 
     if (body.semanticCacheEnabled !== undefined) {
       updates.semanticCacheEnabled = body.semanticCacheEnabled;
+    }
+    if (body.semanticCacheBackend !== undefined) {
+      updates.semanticCacheBackend = body.semanticCacheBackend;
+    }
+    if (body.semanticCacheThreshold !== undefined) {
+      updates.semanticCacheThreshold = body.semanticCacheThreshold;
+    }
+    if (body.semanticCacheEmbeddingProvider !== undefined) {
+      updates.semanticCacheEmbeddingProvider = body.semanticCacheEmbeddingProvider;
+    }
+    if (body.semanticCacheEmbeddingModel !== undefined) {
+      updates.semanticCacheEmbeddingModel = body.semanticCacheEmbeddingModel;
+    }
+    if (body.semanticCacheEmbeddingDimension !== undefined) {
+      updates.semanticCacheEmbeddingDimension = body.semanticCacheEmbeddingDimension;
+    }
+    if (body.semanticCacheRedisUrl !== undefined) {
+      updates.semanticCacheRedisUrl = body.semanticCacheRedisUrl;
+    }
+    if (body.semanticCacheRequireZeroTemp !== undefined) {
+      updates.semanticCacheRequireZeroTemp = body.semanticCacheRequireZeroTemp;
     }
     if (body.semanticCacheMaxSize !== undefined) {
       updates.semanticCacheMaxSize = body.semanticCacheMaxSize;
